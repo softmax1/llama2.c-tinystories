@@ -8,11 +8,12 @@ resources:
 num_nodes: 1
 
 envs:
-  PUSH_TO_HUB: true
   HF_TOKEN: ""
   WANDB_API_KEY: ""
   GIT_USERNAME: ""
   GIT_EMAIL: ""
+
+  CONFIG: "softmax1-15m"
 
 workdir: .
 
@@ -40,4 +41,4 @@ run: |
   conda activate llama
   cd ~/sky_workdir
 
-  python train.py config/tinystories.py
+  python train.py config/$CONFIG.py

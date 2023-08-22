@@ -7,3 +7,4 @@ bins
 run
 .env
 wandb
+manual_login.sh
