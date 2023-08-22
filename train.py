@@ -22,6 +22,7 @@ import time
 from contextlib import nullcontext
 from datetime import datetime
 from functools import partial
+import json
 
 import torch
 from model import Transformer, ModelArgs
@@ -71,6 +72,8 @@ warmup_iters = 1000  # how many steps to warm up for
 device = "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = "bfloat16"  # float32|bfloat16|float16
 compile = True  # use PyTorch 2.0 to compile the model to be faster
+# softmax1
+softmax1 = False
 # -----------------------------------------------------------------------------
 config_keys = [
     k
@@ -116,6 +119,8 @@ if master_process:
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
+    with open(f'{out_dir}/config.json', 'w') as f:
+        json.dump(config, f)
 torch.manual_seed(1337 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True  # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True  # allow tf32 on cudnn
@@ -153,6 +158,7 @@ model_args = dict(
     multiple_of=multiple_of,
     max_seq_len=max_seq_len,
     dropout=dropout,
+    softmax1=softmax1,
 )  # start with model_args from command line
 if init_from == "scratch":
     # init a new model from scratch
@@ -167,7 +173,7 @@ elif init_from == "resume":
     checkpoint_model_args = checkpoint["model_args"]
     # force these config attributes to be equal otherwise we can't even resume training
     # the rest of the attributes (e.g. dropout) can stay as desired from command line
-    for k in ["dim", "n_layers", "n_heads", "n_kv_heads", "vocab_size", "multiple_of", "max_seq_len"]:
+    for k in ["dim", "n_layers", "n_heads", "n_kv_heads", "vocab_size", "multiple_of", "max_seq_len", "softmax1"]:
         model_args[k] = checkpoint_model_args[k]
     # create the model
     gptconf = ModelArgs(**model_args)

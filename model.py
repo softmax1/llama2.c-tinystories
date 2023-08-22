@@ -7,7 +7,7 @@ from typing import Any, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import nn
+from torch import nn, Tensor
 
 @dataclass
 class ModelArgs:
@@ -22,6 +22,7 @@ class ModelArgs:
     norm_eps: float = 1e-5
     max_seq_len: int = 2048
     dropout: float = 0.0
+    softmax1: bool = False
 
 
 class RMSNorm(torch.nn.Module):
@@ -36,6 +37,36 @@ class RMSNorm(torch.nn.Module):
     def forward(self, x):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
+
+# Ref: https://github.com/softmax1/EsperBERTo/blob/7d2d5ed8695b95ade6bcbe21b7ce981b3c9394d7/src/functional.py#L7C6-L35
+def softmax_n_shifted_zeros(input: Tensor, n: int) -> Tensor:
+    """
+    $\text(softmax)_n(x_i) = exp(x_i) / (n + \sum_j exp(x_j))$
+
+    Note: softmax_n, with fixed input, is _not_ shift-symmetric when n != 0, and we must account for this.
+    Normally when computing a softmax, the maxes are subtracted from the inputs for numeric stability.
+    """
+    # compute the maxes along the last dimension
+    input_maxes = input.max(dim=-1, keepdim=True).values
+    # shift the input to prevent overflow (and underflow in the denominator)
+    shifted_inputs = torch.subtract(input, input_maxes)
+    # compute the numerator and softmax_0 denominator using the shifted input
+    numerator = torch.exp(shifted_inputs)
+    original_denominator = numerator.sum(dim=-1, keepdim=True)
+    # we need to shift the zeros in the same way we shifted the inputs
+    shifted_zeros = torch.multiply(input_maxes, -1)
+    # and then add this contribution to the denominator
+    denominator = torch.add(original_denominator, torch.multiply(torch.exp(shifted_zeros), n))
+    return torch.divide(numerator, denominator)
+
+def softmax_1(input: Tensor) -> Tensor:
+    """
+    $\text(softmax)_n(x_i) = exp(x_i) / (1 + \sum_j exp(x_j))$
+
+    After a small amount of testing, the "shifted zeros" approach appears to be faster.
+    I am definitely open to suggestions on which approach is better though.
+    """
+    return softmax_n_shifted_zeros(input, 1)
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
@@ -116,6 +147,10 @@ class Attention(nn.Module):
             mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
             mask = torch.triu(mask, diagonal=1)
             self.register_buffer("mask", mask)
+        else:
+            assert(not args.softmax1, "softmax1 is not supported in flash attention")
+        
+        self.softmax1 = args.softmax1
 
     def forward(
         self,
@@ -151,7 +186,10 @@ class Attention(nn.Module):
             scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
             assert hasattr(self, 'mask')
             scores = scores + self.mask[:, :, :seqlen, :seqlen]   # (bs, n_local_heads, seqlen, cache_len + seqlen)
-            scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+            if not self.softmax1:
+                scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+            else:
+                scores = softmax_1(scores.float()).type_as(xq)
             scores = self.attn_dropout(scores)
             output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
 
