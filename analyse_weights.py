@@ -1,13 +1,11 @@
-
 from argparse import ArgumentParser
 import torch
 from model import ModelArgs, Transformer
 import json
-from matplotlib import pyplot as plt
 
 parser = ArgumentParser()
 
-parser.add_argument('--out-dir', required=True, type=str)
+parser.add_argument("--out-dir", required=True, type=str)
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -15,7 +13,7 @@ if __name__ == "__main__":
     # resume training from a checkpoint.
     out_dir = args.out_dir
     ckpt_path = f"{out_dir}/ckpt.pt"
-    checkpoint = torch.load(ckpt_path, map_location='cpu')
+    checkpoint = torch.load(ckpt_path, map_location="cpu")
     checkpoint_model_args = checkpoint["model_args"]
     # create the model
     gptconf = ModelArgs(**checkpoint_model_args)
@@ -40,21 +38,22 @@ if __name__ == "__main__":
         skews = torch.mean(torch.pow(zscores, 3.0))
         kurtosis = torch.mean(torch.pow(zscores, 4.0)) - 3.0
 
-        outliers = torch.logical_or(param.data > mean + 6 *std, param.data < mean - 6 * std).sum()
+        outliers = torch.logical_or(
+            param.data > mean + 6 * std, param.data < mean - 6 * std
+        ).sum()
 
         weights_dist[name] = {
-            'mean': mean.item(),
-            'var': var.item(),
-            'std': std.item(),
-            'skews': skews.item(),
-            'kurtosis': kurtosis.item(),
-            'outliers': outliers.item(),
-            'outlier_percent': outliers.item() / param.data.numel()
+            "mean": mean.item(),
+            "var": var.item(),
+            "std": std.item(),
+            "skews": skews.item(),
+            "kurtosis": kurtosis.item(),
+            "outliers": outliers.item(),
+            "outlier_percent": outliers.item() / param.data.numel(),
         }
 
         all_weights.append(param.data.detach().flatten(0).cpu().numpy())
 
-    results_path = f'{out_dir}/weights.json'
-    with open(results_path, 'w') as f:
+    results_path = f"{out_dir}/weights.json"
+    with open(results_path, "w") as f:
         json.dump(weights_dist, f, indent=2)
-

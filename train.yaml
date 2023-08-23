@@ -30,6 +30,9 @@ setup: |
   sudo apt install git-lfs
   git lfs install
 
+  echo 'alias skyy="cd ~/sky_workdir && conda activate llama"' >> ~/.bashrc
+  source ~/.bashrc
+
   cd ~/sky_workdir
   pip install -r requirements.txt
 
@@ -38,7 +41,6 @@ setup: |
 
 run: |
   set -e  # Exit if any command failed.
-  conda activate llama
-  cd ~/sky_workdir
+  skyy
 
   python train.py config/$CONFIG.py

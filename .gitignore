@@ -4,6 +4,7 @@ out
 bins
 **/*.pt
 *.bin
+!tokenizer.bin
 run
 .env
 wandb
