@@ -1,8 +1,7 @@
 """
 Sample from the trained model with PyTorch
 """
-import os
-import pickle
+import json
 from contextlib import nullcontext
 import torch
 from model import ModelArgs, Transformer
@@ -12,6 +11,7 @@ from tinystories import get_tokenizer_model_path
 
 # -----------------------------------------------------------------------------
 checkpoint = 'out/ckpt.pt'
+config = 'out/config.json'
 start = "" # or "<|endoftext|>" or etc. Can also specify a file, use as: "FILE:prompt.txt"
 num_samples = 1 # number of samples to draw
 max_new_tokens = 100 # number of tokens generated in each sample
@@ -21,8 +21,8 @@ tokenizer = "" # override the tokenizer model path
 seed = 1337
 device = 'cuda' if torch.cuda.is_available() else 'cpu' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1', etc.
 #dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32' or 'bfloat16' or 'float16'
-dtype = "float32"
-compile = False # use PyTorch 2.0 to compile the model to be faster
+dtype = "float16"
+compile = True # use PyTorch 2.0 to compile the model to be faster
 exec(open('configurator.py').read()) # overrides from command line or config file
 # -----------------------------------------------------------------------------
 
@@ -52,7 +52,9 @@ if compile:
     model = torch.compile(model) # requires PyTorch 2.0 (optional)
 
 # load the tokenizer
-vocab_source = checkpoint_dict["config"].get("vocab_source", "llama2")
+with open(config, 'r') as f:
+    config = json.load(f)
+vocab_source = config.get("vocab_source", "llama2")
 vocab_size = gptconf.vocab_size
 if tokenizer:
     # a specific tokenizer is provided, use it
@@ -70,10 +72,48 @@ if start.startswith('FILE:'):
 start_ids = enc.encode(start, bos=True, eos=False)
 x = (torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...])
 
+@torch.no_grad()
+def save_activations(module, input, output):
+    """Cache output of (a Transformer block)"""
+    module.output = output
+
+for block in model.layers:
+    block.register_forward_hook(save_activations)
+
+def activation_stats(data):
+  mean = data.mean()
+  diffs = data - mean
+  var = torch.mean(torch.pow(diffs, 2.0))
+  std = torch.pow(var, 0.5)
+  zscores = diffs / std
+  skew = torch.mean(torch.pow(zscores, 3.0))
+  kurtosis = torch.mean(torch.pow(zscores, 4.0)) - 3.0
+  return kurtosis, skew
+
+@torch.no_grad()
+def compute_metrics(model, types={'kurtosis', 'skew'}):
+    assert types.issubset({'kurtosis', 'skew'})
+
+    batch_activations = torch.stack([block.output for block in model.layers], dim=1)
+    stats = torch.tensor([activation_stats(a.flatten().float()) for a in batch_activations])
+    skew = stats[:,0].tolist()
+    kurtosis = stats[:,1].tolist()
+    return {
+        'kurtosis': kurtosis,
+        'skew': skew,
+    }
+
 # run generation
-with torch.no_grad():
+@torch.no_grad()
+def generate(x=x, max_new_tokens=max_new_tokens, temperature=temperature, top_k=top_k):
     with ctx:
         for k in range(num_samples):
-            y = model.generate(x, max_new_tokens, temperature=temperature, top_k=top_k)
-            print(enc.decode(y[0].tolist()))
-            print('---------------')
+            y = model.generate(x, max_new_tokens, temperature, top_k)
+            metrics = compute_metrics(model)
+            yield enc.decode(y[0].tolist()), metrics
+
+if __name__ == '__main__':
+    for y, metrics in generate():
+        print(y + '\n----------')
+        for k,v in metrics.items():
+            print(f"{k}: {v[0]:.2f}")

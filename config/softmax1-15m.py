@@ -15,3 +15,8 @@ n_kv_heads = 6
 max_seq_len = 256
 # At A10-16GB
 batch_size = 96
+
+# Inference
+const_out_dir = "out/softmax1-15m-2023_08_22_03_16_17"
+checkpoint = f"{const_out_dir}/ckpt.pt"
+config = f'{const_out_dir}/config.json'
