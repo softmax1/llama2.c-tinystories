@@ -8,7 +8,7 @@ from model import ModelArgs, Transformer
 from tokenizer import Tokenizer
 
 from tinystories import get_tokenizer_model_path
-from analysis import activation_hooks, kurtosis_metrics
+from analysis import activation_hooks, quantisation_metrics
 
 # -----------------------------------------------------------------------------
 checkpoint = 'out/ckpt.pt'
@@ -91,6 +91,6 @@ def generate(x=x, max_new_tokens=max_new_tokens, temperature=temperature, top_k=
 if __name__ == '__main__':
     for y in generate():
         print(y + '\n----------')
-        results = kurtosis_metrics(saved_activations, model)
+        results = quantisation_metrics(saved_activations, model)
         print(f"weight kurtosis: {results['weights']['mean']:.3f}")
         print(f"activation kurtosis: {results['activations']['mean']:.3f}")

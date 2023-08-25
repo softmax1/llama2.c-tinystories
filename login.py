@@ -19,3 +19,6 @@ def login_all(do_wandb=True, do_hf=True):
 			print(f"Invalid HuggingFace token: {e}")
 	else:
 		print("No HuggingFace token found. Skipping login...")
+
+if __name__ == '__main__':
+	login_all()

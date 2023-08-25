@@ -22,6 +22,19 @@ def kurtosis(x: Tensor, dim: int = 0) -> Tensor:
 		excess_kurtosis = mean(pow(y, 2), dim=1) / pow(mean(y, dim=1), 2) - 3.
 		return excess_kurtosis
 
+# TODO: Add skew to hook
+@torch.no_grad()
+def skewness(x: Tensor, dim: int = 0) -> Tensor:
+    """
+    Batch skewness along batch dim.
+    skewness[x] = E[y^3] / (E[y^2])^1.5, where y = (x - E[x])
+    """
+    # Flatten input x except batch_size dim
+    x = x.view(x.shape[dim], -1)
+    y = x - mean(x, dim=1, keepdim=True)
+    skewness = mean(pow(y, 3), dim=1) / pow(mean(pow(y, 2), dim=1), 1.5)
+    return skewness
+
 @torch.no_grad()
 def compute_avg_and_std(array: List[float]) -> Dict[str, float]:
 		avg = sum(array) / len(array)
@@ -70,7 +83,7 @@ def save_activations_kurtosis(
 		"""
 		m = out.shape[0]
 		num_params = torch.tensor(out.shape[1:]).prod().item() # exclude batch_size
-		k = kurtosis(out.detach()).sum().item()
+		k = kurtosis(out).sum().item()
 		n, mu, _ = activations[name]
 		activations[name] = [n + m, (n * mu + k) / (n + m), num_params] # TODO: Weight mean by num params
 
@@ -126,9 +139,10 @@ def summarise_layers(activations_dict: DefaultDict[str, float], num_params: List
 		return {'layers': activations_dict, 'summary': summary_per_layer, 'mean': mean}
 
 # Analysis
-def kurtosis_metrics(saved_activation_kurtosis: Dict[str, List[float]], model: Module) -> dict:
+def quantisation_metrics(saved_activation_kurtosis: Dict[str, List[float]], model: Module) -> dict:
 		"""
-		Compute weight and activation kurtosis post-inference.
+		Compute quantisation proxy metrics post-inference.
+		Currently: weight and activation kurtosis and skew.
 		"""
 		activation_kurtosis = {name: val[1] for name, val in saved_activation_kurtosis.items()}
 		activation_params = [val[2] for val in saved_activation_kurtosis.values()]

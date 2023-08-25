@@ -38,9 +38,11 @@ setup: |
 
   python tinystories.py download
   python tinystories.py pretokenize
+  python login.py
 
 run: |
   set -e  # Exit if any command failed.
   skyy
 
   python train.py config/$CONFIG.py
+  # On local: rsync -Pavz train:/home/gcpuser/sky_workdir/out ./out

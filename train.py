@@ -32,7 +32,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tinystories import Task
 from export import model_export
 from login import login_all
-from analysis import activation_hooks, kurtosis_metrics, flatten_dict
+from analysis import activation_hooks, quantisation_metrics, flatten_dict
 
 # -----------------------------------------------------------------------------
 # I/O
@@ -78,7 +78,7 @@ device = (
     "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 )
 dtype = "float16"  # float32|bfloat16|float16
-compile = True  # use PyTorch 2.0 to compile the model to be faster
+compile = False  # use PyTorch 2.0 to compile the model to be faster
 # softmax1
 softmax1 = False
 # -----------------------------------------------------------------------------
@@ -252,7 +252,7 @@ def compute_metrics():
     model.eval()
     for split in ["train", "val"]:
         batch_iter = iter_batches(split=split)
-        kurtosis_batch, deregister = activation_hooks(model)
+        qbatch, deregister = activation_hooks(model)
         losses = torch.zeros(eval_iters)  # keep on CPU
         for k in range(eval_iters):
             X, Y = next(batch_iter)
@@ -260,11 +260,11 @@ def compute_metrics():
                 logits = model(X, Y)
                 loss = raw_model.last_loss
             losses[k] = loss.item()
-        kurtosis = kurtosis_metrics(kurtosis_batch, model)
+        qstats = quantisation_metrics(qbatch, model)
 
         out[split] = {'loss': losses.mean(),
-                       'kurtosis.weight': kurtosis['weights']['mean'], 
-                       'kurtosis.activation': kurtosis['activations']['mean']
+                       'kurtosis.weight': qstats['weights']['mean'], 
+                       'kurtosis.activation': qstats['activations']['mean']
                     } # TODO
         deregister()
     model.train()

@@ -14,7 +14,7 @@ n_heads = 6
 n_kv_heads = 6
 max_seq_len = 256
 # At A10-16GB
-batch_size = 96
+batch_size = 72
 
 # Inference
 const_out_dir = "out/softmax1-15m-2023_08_22_03_16_17"
