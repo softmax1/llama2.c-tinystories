@@ -3,7 +3,7 @@ from datetime import datetime
 wandb_project = "softmax1-tinystories"
 
 # For softmax0
-wandb_run_name = "softmax1-15m-" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+wandb_run_name = "softmax1-toy-" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 out_dir = f"out/{wandb_run_name}"
 softmax1 = False
 
