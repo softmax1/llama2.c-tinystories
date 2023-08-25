@@ -8,6 +8,7 @@ from model import ModelArgs, Transformer
 from tokenizer import Tokenizer
 
 from tinystories import get_tokenizer_model_path
+from analysis import activation_hooks, kurtosis_metrics
 
 # -----------------------------------------------------------------------------
 checkpoint = 'out/ckpt.pt'
@@ -47,7 +48,7 @@ model.load_state_dict(state_dict, strict=False)
 
 model.eval()
 model.to(device)
-if compile:
+if compile and torch.__version__.startswith('2'):
     print("Compiling the model...")
     model = torch.compile(model) # requires PyTorch 2.0 (optional)
 
@@ -77,43 +78,19 @@ def save_activations(module, input, output):
     """Cache output of (a Transformer block)"""
     module.output = output
 
-for block in model.layers:
-    block.register_forward_hook(save_activations)
-
-def activation_stats(data):
-  mean = data.mean()
-  diffs = data - mean
-  var = torch.mean(torch.pow(diffs, 2.0))
-  std = torch.pow(var, 0.5)
-  zscores = diffs / std
-  skew = torch.mean(torch.pow(zscores, 3.0))
-  kurtosis = torch.mean(torch.pow(zscores, 4.0)) - 3.0
-  return kurtosis, skew
-
-@torch.no_grad()
-def compute_metrics(model, types={'kurtosis', 'skew'}):
-    assert types.issubset({'kurtosis', 'skew'})
-
-    batch_activations = torch.stack([block.output for block in model.layers], dim=1)
-    stats = torch.tensor([activation_stats(a.flatten().float()) for a in batch_activations])
-    skew = stats[:,0].tolist()
-    kurtosis = stats[:,1].tolist()
-    return {
-        'kurtosis': kurtosis,
-        'skew': skew,
-    }
-
+saved_activations, deregister_hooks = activation_hooks(model)
 # run generation
 @torch.no_grad()
 def generate(x=x, max_new_tokens=max_new_tokens, temperature=temperature, top_k=top_k):
     with ctx:
         for k in range(num_samples):
             y = model.generate(x, max_new_tokens, temperature, top_k)
-            metrics = compute_metrics(model)
-            yield enc.decode(y[0].tolist()), metrics
+            # metrics = compute_metrics(model)
+            yield enc.decode(y[0].tolist()) #, metrics
 
 if __name__ == '__main__':
-    for y, metrics in generate():
+    for y in generate():
         print(y + '\n----------')
-        for k,v in metrics.items():
-            print(f"{k}: {v[0]:.2f}")
+        results = kurtosis_metrics(saved_activations, model)
+        print(f"weight kurtosis: {results['weights']['mean']:.3f}")
+        print(f"activation kurtosis: {results['activations']['mean']:.3f}")

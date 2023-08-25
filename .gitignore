@@ -9,3 +9,5 @@ run
 .env
 wandb
 manual_login.sh
+err.txt
+stdout.txt

@@ -32,13 +32,14 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tinystories import Task
 from export import model_export
 from login import login_all
+from analysis import activation_hooks, kurtosis_metrics, flatten_dict
 
 # -----------------------------------------------------------------------------
 # I/O
 out_dir = "out"
-eval_interval = 2000  # eval how often, in iters
+eval_interval = 1000  # eval how often, in iters
 log_interval = 1  # log how often, in iters
-eval_iters = 100  # eval metrics averaged over `eval_iters` iters
+eval_iters = 50  # eval metrics averaged over `eval_iters` iters
 eval_only = False  # if True, script exits right after the first eval
 always_save_checkpoint = True  # if True, always save a checkpoint after each eval
 init_from = "scratch"  # 'scratch' or 'resume'
@@ -212,8 +213,9 @@ elif init_from == "resume":
         if k.startswith(unwanted_prefix):
             state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
     model.load_state_dict(state_dict)
-    iter_num = checkpoint["iter_num"]
-    best_val_loss = checkpoint["best_val_loss"]
+    print(list(checkpoint.keys()))
+    iter_num = checkpoint.get("iter_num") or int(1e5)
+    best_val_loss = checkpoint.get("best_val_loss") or 1.5 # WARN: Don't commit this
 model.to(device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
@@ -231,7 +233,8 @@ checkpoint = None  # free up memory
 if compile:
     print("compiling the model... (takes a ~minute)")
     unoptimized_model = model
-    model = torch.compile(model)  # requires PyTorch 2.0
+    if torch.__version__.startswith("2"):
+        model = torch.compile(model)  # requires PyTorch 2.0
 
 # wrap model into DDP container
 if ddp:
@@ -244,11 +247,12 @@ if ddp:
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
-def estimate_loss():
+def compute_metrics():
     out = {}
     model.eval()
     for split in ["train", "val"]:
         batch_iter = iter_batches(split=split)
+        kurtosis_batch, deregister = activation_hooks(model)
         losses = torch.zeros(eval_iters)  # keep on CPU
         for k in range(eval_iters):
             X, Y = next(batch_iter)
@@ -256,7 +260,13 @@ def estimate_loss():
                 logits = model(X, Y)
                 loss = raw_model.last_loss
             losses[k] = loss.item()
-        out[split] = losses.mean()
+        kurtosis = kurtosis_metrics(kurtosis_batch, model)
+
+        out[split] = {'loss': losses.mean(),
+                       'kurtosis.weight': kurtosis['weights']['mean'], 
+                       'kurtosis.activation': kurtosis['activations']['mean']
+                    } # TODO
+        deregister()
     model.train()
     return out
 
@@ -281,6 +291,7 @@ if wandb_log and master_process:
     import wandb
 
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
+    #wandb.define_metric("train/*", step_metric="iter")
 
 # training loop
 train_batch_iter = iter_batches(split="train")
@@ -297,9 +308,10 @@ while True:
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
-        losses = estimate_loss()
+        metrics = compute_metrics()
+        val_loss = metrics["val"]["loss"]
         print(
-            f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}"
+            f"step {iter_num}: train loss {metrics['train']['loss']:.4f}, val loss {metrics['val']['loss']:.4f}"
         )
         if wandb_log:
             try:
@@ -307,16 +319,15 @@ while True:
                     {
                         "iter": iter_num,
                         "tokens": iter_num * tokens_per_iter,
-                        "loss/train": losses["train"],
-                        "loss/val": losses["val"],
+                        **flatten_dict(metrics),
                         "lr": lr,
                         "mfu": running_mfu * 100,  # convert to percentage
-                    }
+                    },step=iter_num
                 )
             except Exception as e:
                 print(f"logging to wandb failed: {e}")
-        if losses["val"] < best_val_loss or always_save_checkpoint:
-            best_val_loss = losses["val"]
+        if val_loss < best_val_loss or always_save_checkpoint:
+            best_val_loss = val_loss
             if iter_num > 0:
                 checkpoint = {
                     "model": raw_model.state_dict(),
