@@ -1,4 +1,5 @@
 from pytest import approx, mark
+from scipy.stats import kurtosis as scipy_kurtosis
 from torch import randn, rand
 from torch.nn import Module, Conv2d
 from torch.nn.functional import relu
@@ -19,11 +20,11 @@ def test_compute_avg_and_std():
 
 
 def test_kurtosis():
-    normal_kurtosis = kurtosis(randn(1,10000)).item()
+    input = randn(10000)
+    normal_kurtosis = kurtosis(input.unsqueeze(0)).item()
+    s_kurtosis = scipy_kurtosis(input.numpy())
     assert normal_kurtosis == approx(0., abs=0.1)
-    uniform_kurtosis = kurtosis(rand(1,10000)).item()
-    assert uniform_kurtosis == approx(-1.2, abs=0.1)
-
+    assert normal_kurtosis == approx(s_kurtosis, abs=0.001)
 
 def test_flatten_dict():
     input = {'a': {'b': 1, 'c': 2}}

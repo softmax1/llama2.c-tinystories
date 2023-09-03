@@ -9,6 +9,7 @@ from tokenizer import Tokenizer
 
 from tinystories import get_tokenizer_model_path
 from analysis import activation_hooks, quantisation_metrics
+from model import attn_act
 
 # -----------------------------------------------------------------------------
 checkpoint = 'out/ckpt.pt'
@@ -53,9 +54,9 @@ if compile and torch.__version__.startswith('2'):
     model = torch.compile(model) # requires PyTorch 2.0 (optional)
 
 # load the tokenizer
-with open(config, 'r') as f:
-    config = json.load(f)
-vocab_source = config.get("vocab_source", "llama2")
+#with open(config, 'r') as f:
+#    config = json.load(f)
+vocab_source = 'llama2'#config.get("vocab_source", "llama2")
 vocab_size = gptconf.vocab_size
 if tokenizer:
     # a specific tokenizer is provided, use it
@@ -73,12 +74,7 @@ if start.startswith('FILE:'):
 start_ids = enc.encode(start, bos=True, eos=False)
 x = (torch.tensor(start_ids, dtype=torch.long, device=device)[None, ...])
 
-@torch.no_grad()
-def save_activations(module, input, output):
-    """Cache output of (a Transformer block)"""
-    module.output = output
-
-saved_activations, deregister_hooks = activation_hooks(model)
+saved_activations, deregister_hooks, a_b = activation_hooks(model)
 # run generation
 @torch.no_grad()
 def generate(x=x, max_new_tokens=max_new_tokens, temperature=temperature, top_k=top_k):
@@ -94,3 +90,9 @@ if __name__ == '__main__':
         results = quantisation_metrics(saved_activations, model)
         print(f"weight kurtosis: {results['weights']['mean']:.3f}")
         print(f"activation kurtosis: {results['activations']['mean']:.3f}")
+        import pandas as pd
+        df = pd.DataFrame(attn_act).T
+        df.columns = ['mu', 'max','min', 'std', '2nd_max']
+        with pd.option_context('display.max_rows', None, 'display.max_columns', None):  # more options can be specified also
+            print(df)
+            print(df.describe())

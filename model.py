@@ -122,6 +122,12 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
         .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
     )
 
+FLAGS = {
+	'inspect_attn_act': False,
+    'inspect_softmax_sum': True
+}
+attn_act = {}
+softmax_sum = []
 class Attention(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
@@ -143,12 +149,12 @@ class Attention(nn.Module):
         # use flash attention or a manual implementation?
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flash:
-            print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+            # print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
             mask = torch.triu(mask, diagonal=1)
             self.register_buffer("mask", mask)
-        else:
-            assert(not args.softmax1, "softmax1 is not supported in flash attention")
+        # else:
+            # assert(not args.softmax1, "softmax1 is not supported in flash attention")
         
         self.softmax1 = args.softmax1
 
@@ -184,12 +190,32 @@ class Attention(nn.Module):
         else:
             # manual implementation
             scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
+            if FLAGS['inspect_attn_act']:
+                out = scores.detach().squeeze(0).flatten(1)
+                mu = out.mean(dim=1)
+                mx = out.max(dim=1).values
+                mn = out.min(dim=1).values
+                std = out.std(dim=1)
+                max2 = out.topk(2, dim=1).values[:, 1]
+                block_num = len(attn_act) // self.n_local_heads
+                heads = zip(mu, mx, mn, std, max2)
+                for i,h in enumerate(heads):
+                    attn_act[f'block{block_num}_head{i}'] = [hi.item() for hi in h]
+
             assert hasattr(self, 'mask')
             scores = scores + self.mask[:, :, :seqlen, :seqlen]   # (bs, n_local_heads, seqlen, cache_len + seqlen)
             if not self.softmax1:
                 scores = F.softmax(scores.float(), dim=-1).type_as(xq)
             else:
                 scores = softmax_1(scores.float()).type_as(xq)
+
+            if FLAGS['inspect_softmax_sum']:
+                global softmax_sum
+                if len(softmax_sum) >=6: # num_blocks hardcoded
+                    softmax_sum = []
+                sums = scores.detach().squeeze(0).sum(-1).cpu()
+                softmax_sum.append(sums)
+
             scores = self.attn_dropout(scores)
             output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
 
@@ -349,19 +375,22 @@ class Transformer(nn.Module):
         return mfu
 
     @torch.inference_mode()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, return_logits=False):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         Also note this is a super inefficient version of sampling with no key/value cache.
         """
+        logits_list = []
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.params.max_seq_len else idx[:, -self.params.max_seq_len:]
             # forward the model to get the logits for the index in the sequence
             logits = self(idx_cond)
             logits = logits[:, -1, :] # crop to just the final time step
+            logits_list.append(logits.unsqueeze(1))
+
             if temperature == 0.0:
                 # "sample" the single most likely index
                 _, idx_next = torch.topk(logits, k=1, dim=-1)
@@ -373,9 +402,12 @@ class Transformer(nn.Module):
                     v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
                     logits[logits < v[:, [-1]]] = -float('Inf')
                 # apply softmax to convert logits to (normalized) probabilities
-                probs = F.softmax(logits, dim=-1)
-                idx_next = torch.multinomial(probs, num_samples=1)
+                probs_next = F.softmax(logits, dim=-1)
+                idx_next = torch.multinomial(probs_next, num_samples=1)
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 
+        if return_logits:
+            return idx, torch.cat(logits_list, dim=1)
+        
         return idx

@@ -3,7 +3,7 @@
 name: train
 
 resources:
-  accelerators: V100:1
+  accelerators: A100:1
 
 num_nodes: 1
 

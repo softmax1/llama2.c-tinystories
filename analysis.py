@@ -67,11 +67,15 @@ def flatten_dict(input_dict, parent_key='', separator='/'):
     
     return flattened_dict
 
+FLAGS = {
+	'inspect_attn_mean': False,
+}
 
 # Activation Kurtosis Hook
 @torch.no_grad()
 def save_activations_kurtosis(
 				activations: DefaultDict,
+				a: dict,
 				name: str,
 				module: Module,
 				inp: Tuple,
@@ -82,6 +86,14 @@ def save_activations_kurtosis(
 		Mutates specified dict objects with each fwd pass.
 		"""
 		m = out.shape[0]
+		if is_query_key := name[-3:] in ('.wq', '.wk') and FLAGS['inspect_attn_mean']:
+			bsz, seqlen, _ = out.shape
+			out = out.detach().clone().view(bsz, seqlen ,6,48) # num_heads, k/q embed_dim
+			#print(out, out.shape)
+			mu = out.mean().item()
+			mx = out.max().item()
+			mn = out.min().item()
+			a[name] = [mu, mx, mn, a[name][-1] + 1 if name in a else 1]
 		num_params = torch.tensor(out.shape[1:]).prod().item() # exclude batch_size
 		k = kurtosis(out).sum().item()
 		n, mu, _ = activations[name]
@@ -107,20 +119,21 @@ def activation_hooks(
 				``layers_to_save``.
 		"""
 		activations_dict = defaultdict(lambda: [0, 0., 0])
+		a = {} # Raw attention activations: a = Q @ K.T, where attn = softmax(a/sqrt(d_k)) @ v
 		hooks = []
 
 		for name, module in model.named_modules():
 				if layers_to_save is None or name in layers_to_save:
 						unwanted_prefix = '_orig_mod.'
 						hooks += [module.register_forward_hook(
-								partial(save_activations_kurtosis, activations_dict, name.replace(unwanted_prefix, ''))
+								partial(save_activations_kurtosis, activations_dict, a, name.replace(unwanted_prefix, ''))
 						)]
 				
 		def deregister():
 				for hook in hooks:
 						hook.remove()
 
-		return activations_dict, deregister
+		return activations_dict, deregister, a
 
 CAPTURE_PATTERN = r"feed_forward\.w\d+"
 
