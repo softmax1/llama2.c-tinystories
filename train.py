@@ -260,13 +260,33 @@ def compute_metrics():
                 logits = model(X, Y)
                 loss = raw_model.last_loss
             losses[k] = loss.item()
+        # TODO @Markus you mentioned this was computing metrics wrongly, so I commented it out, if this is
+        #  correct can you remove this below line, if not uncomment it.
+        """
         qstats = quantisation_metrics(qbatch, model)
 
         out[split] = {'loss': losses.mean(),
-                       'kurtosis.weight': qstats['weights']['mean'], 
-                       'kurtosis.activation': qstats['activations']['mean']
-                    } # TODO
+                      'kurtosis.weight': qstats['weights']['mean'], 
+                        'kurtosis.activation': qstats['activations']['mean']
+                        }
+        """
+        out[split] = {'loss': losses.mean()}
         deregister()
+
+    # compute metrics on last batch of validation
+    att_inf_norm, att_kurtosis = raw_model.compute_attention_metrics()
+    ffn_inf_norm, ffn_kurtosis = raw_model.compute_ffn_metrics()
+    for i, (att_norm, att_k, ffn_norm, ffn_k) in enumerate(zip(att_inf_norm, att_kurtosis, ffn_inf_norm, ffn_kurtosis)):
+        out[split].update({f"atten_inf_norm_{i}": att_norm,
+                           f"atten_kurtosis_{i}": att_k,
+                           f"ffn_inf_norm_{i}": ffn_norm,
+                           f"ffn_kurtosis_{i}": ffn_k})
+    # i am not certain how to log the softmax sum tensor into wandb afaik they do not fully support
+    # just logging a pytorch tensor, so for now log two metrics of the softmax sum and softmax sum as a list
+    s = raw_model.compute_softmax_metrics()  # [batch size, layer number, attention head, seq len]
+    out[split].update({"softmax_sum_min": s.min().item(),
+                       "softmax_sum_shape": s.shape,
+                       "softmax_sum_list": s.tolist()})
     model.train()
     return out
 

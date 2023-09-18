@@ -2,12 +2,14 @@ import math
 import struct
 import inspect
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, List
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
+
+from scipy.stats import kurtosis
 
 @dataclass
 class ModelArgs:
@@ -123,11 +125,9 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 FLAGS = {
-	'inspect_attn_act': False,
-    'inspect_softmax_sum': True
+	'inspect_attn_act': False
 }
 attn_act = {}
-softmax_sum = []
 class Attention(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
@@ -209,12 +209,9 @@ class Attention(nn.Module):
             else:
                 scores = softmax_1(scores.float()).type_as(xq)
 
-            if FLAGS['inspect_softmax_sum']:
-                global softmax_sum
-                if len(softmax_sum) >=12: # num_blocks hardcoded
-                    softmax_sum = []
-                sums = scores.detach().squeeze(0).sum(-1).cpu()
-                softmax_sum.append(sums)
+            # save intermediate softmax tensor for compute_softmax_metrics during eval state
+            if not self.training:
+                self.softmax_output = scores.detach().cpu()
 
             scores = self.attn_dropout(scores)
             output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
@@ -225,6 +222,11 @@ class Attention(nn.Module):
         # final projection into the residual stream
         output = self.wo(output)
         output = self.resid_dropout(output)
+
+        # save intermediate output for compute_attention_metrics during eval state
+        if not self.training:
+            self.output = output.detach().cpu()
+
         return output
 
 
@@ -241,7 +243,11 @@ class FeedForward(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
+        output = self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
+        # save intermediate output for compute_ffn_metrics during eval state
+        if not self.training:
+            self.output = output.detach().cpu()
+        return output
 
 
 class TransformerBlock(nn.Module):
@@ -411,3 +417,35 @@ class Transformer(nn.Module):
             return idx, torch.cat(logits_list, dim=1)
         
         return idx
+
+    # *yoink*: https://github.com/tcapelle/llama2.c/blob/af8597ca6ac0c74142951c44b8d6926e170d791a/model.py#L428
+    # the following metric computations require that the model be run in eval mode, then the respective layer outputs
+    # will be saved in order to compute the metric of the latest input passed through the model
+    def compute_attention_metrics(self) -> Tuple[List[float], List[float]]:
+        "compute the max inf norm and kurtosis of the attention outputs"
+        outputs = [b.attention.output for b in self.layers]
+        k = [kurtosis(o.flatten().half()) for o in outputs]
+        inf_norm = [o.abs().max().item() for o in outputs]
+        return inf_norm, k
+
+    def compute_ffn_metrics(self) -> Tuple[List[float], List[float]]:
+        "compute the max inf norm and kurtosis of the ffn outputs"
+        outputs = [b.feed_forward.output for b in self.layers]
+        k = [kurtosis(o.flatten().half()) for o in outputs]
+        inf_norm = [o.abs().max().item() for o in outputs]
+        return inf_norm, k
+
+    def compute_softmax_metrics(self) -> torch.Tensor:
+        """
+        compute the softmax sum of the attention outputs
+        output shape: [batch size, layer number, attention head, seq len]
+        """
+        # each softmax_output should be of shape [batch size, attention head, seq len]
+        softmax_sums = [b.attention.softmax_output.sum(-1) for b in self.layers]
+        # stack together tensors from different layers, but make sure stack of layers occurs in dim=1
+        # such that final output shape is [batch size, layer number, attention head, seq len]
+        return torch.stack(softmax_sums, dim=1)
+
+    # TODO Implement compute_perplexity maybe, although this will not be as reliable as compute_perplexity() in
+    #  attention_sums.ipynb that uses .generate() to compute losses for multiple tokens, computing
+    #  perplexities over multiple token generations
