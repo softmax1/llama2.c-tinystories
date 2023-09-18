@@ -157,6 +157,10 @@ class Attention(nn.Module):
             # assert(not args.softmax1, "softmax1 is not supported in flash attention")
         
         self.softmax1 = args.softmax1
+        
+        # intermediate tensors for compute_metrics in eval state
+        self.softmax_output = None
+        self.output = None
 
     def forward(
         self,
@@ -241,6 +245,8 @@ class FeedForward(nn.Module):
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
         self.dropout = nn.Dropout(dropout)
+        # intermediate tensor for compute_metrics in eval state
+        self.output = None
 
     def forward(self, x):
         output = self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
