@@ -37,6 +37,13 @@ class Tokenizer:
 
     def decode(self, t: List[int]) -> str:
         return self.sp_model.decode(t)
+    
+    def convert_ids_to_tokens(self, t: List[int]) -> str:
+        # t is nested list containing batch dim, seq length dim
+        output_batches = []
+        for i in t:
+            output_batches.append(self.sp_model.id_to_piece(i))
+        return output_batches
 
     def export(self):
 
