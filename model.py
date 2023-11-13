@@ -25,6 +25,7 @@ class ModelArgs:
     max_seq_len: int = 2048
     dropout: float = 0.0
     softmax1: bool = False
+    softmaxn_param: float = 1
 
 
 class RMSNorm(torch.nn.Module):
@@ -40,8 +41,9 @@ class RMSNorm(torch.nn.Module):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
 
+
 # Ref: https://github.com/softmax1/EsperBERTo/blob/7d2d5ed8695b95ade6bcbe21b7ce981b3c9394d7/src/functional.py#L7C6-L35
-def softmax_n_shifted_zeros(input: Tensor, n: int) -> Tensor:
+def softmax_n_shifted_zeros(input: Tensor, n: float) -> Tensor:
     """
     $\text(softmax)_n(x_i) = exp(x_i) / (n + \sum_j exp(x_j))$
 
@@ -148,15 +150,18 @@ class Attention(nn.Module):
 
         # use flash attention or a manual implementation?
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        if self.flash and args.softmax1:
+            print("softmax1 is not supported in flash attention, not using flash attention")
+            self.flash = False
+            
         if not self.flash:
             # print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
             mask = torch.triu(mask, diagonal=1)
             self.register_buffer("mask", mask)
-        # else:
-            # assert(not args.softmax1, "softmax1 is not supported in flash attention")
         
         self.softmax1 = args.softmax1
+        self.softmaxn = args.softmaxn_param
         
         # intermediate tensors for compute_metrics in eval state
         self.softmax_output = None
@@ -211,7 +216,7 @@ class Attention(nn.Module):
             if not self.softmax1:
                 scores = F.softmax(scores.float(), dim=-1).type_as(xq)
             else:
-                scores = softmax_1(scores.float()).type_as(xq)
+                scores = softmax_n_shifted_zeros(scores.float(), self.softmaxn).type_as(xq)
 
             # save intermediate softmax tensor for compute_softmax_metrics during eval state
             if not self.training:
@@ -430,14 +435,16 @@ class Transformer(nn.Module):
     def compute_attention_metrics(self) -> Tuple[List[float], List[float]]:
         "compute the max inf norm and kurtosis of the attention outputs"
         outputs = [b.attention.output for b in self.layers]
-        k = [kurtosis(o.flatten().half()) for o in outputs]
+        # in original code it was .half(), but if not double dtype warnings are thrown about
+        # overflow during kurtosis calculation 
+        k = [kurtosis(o.flatten().double()) for o in outputs]
         inf_norm = [o.abs().max().item() for o in outputs]
         return inf_norm, k
 
     def compute_ffn_metrics(self) -> Tuple[List[float], List[float]]:
         "compute the max inf norm and kurtosis of the ffn outputs"
         outputs = [b.feed_forward.output for b in self.layers]
-        k = [kurtosis(o.flatten().half()) for o in outputs]
+        k = [kurtosis(o.flatten().double()) for o in outputs]
         inf_norm = [o.abs().max().item() for o in outputs]
         return inf_norm, k
 
@@ -446,12 +453,14 @@ class Transformer(nn.Module):
         compute the softmax sum of the attention outputs
         output shape: [batch size, layer number, attention head, seq len]
         """
-        # each softmax_output should be of shape [batch size, attention head, seq len]
+        assert(not self.layers[0].attention.flash, "unable to compute softmax metrics with flashattention")
+        # each softmax_output should be of shape [batch size, attention head, seq len, seq len]
+        # then we sum along each row of the softmax to get the sum of the softmax, which would usually
+        # sum to 1, but with softmax-n it can sum to < 1
         softmax_sums = [b.attention.softmax_output.sum(-1) for b in self.layers]
         # stack together tensors from different layers, but make sure stack of layers occurs in dim=1
         # such that final output shape is [batch size, layer number, attention head, seq len]
         return torch.stack(softmax_sums, dim=1)
-
     # TODO Implement compute_perplexity maybe, although this will not be as reliable as compute_perplexity() in
     #  attention_sums.ipynb that uses .generate() to compute losses for multiple tokens, computing
     #  perplexities over multiple token generations
