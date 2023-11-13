@@ -36,7 +36,7 @@ from analysis import activation_hooks, quantisation_metrics, flatten_dict
 
 # -----------------------------------------------------------------------------
 # I/O
-out_dir = "out"
+out_dir = "out/softmax1-110m"
 eval_interval = 1000  # eval how often, in iters
 log_interval = 1  # log how often, in iters
 eval_iters = 50  # eval metrics averaged over `eval_iters` iters
@@ -48,21 +48,21 @@ wandb_log = True  # enabled by default
 wandb_project = "llamac"
 wandb_run_name = "run" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 # data
-batch_size = 128  # if gradient_accumulation_steps > 1, this is the micro-batch size
+batch_size = 24  # if gradient_accumulation_steps > 1, this is the micro-batch size
 max_seq_len = 256
 vocab_source = (
     "llama2"  # llama2|custom; use Lllama 2 vocab from Meta, or custom trained
 )
 vocab_size = 32000  # the Llama 2 tokenizer has 32K tokens
 # model
-dim = 288
-n_layers = 6
-n_heads = 6
-n_kv_heads = 6
+dim = 512
+n_layers = 8
+n_heads = 8
+n_kv_heads = 8
 multiple_of = 32
 dropout = 0.0
 # adamw optimizer
-gradient_accumulation_steps = 4  # used to simulate larger batch sizes
+gradient_accumulation_steps = 16  # used to simulate larger batch sizes
 learning_rate = 5e-4  # max learning rate
 max_iters = 100000  # total number of training iterations (NOT steps)
 # max_steps = max_iters / batch_size 
@@ -80,7 +80,8 @@ device = (
 dtype = "float16"  # float32|bfloat16|float16
 compile = False  # use PyTorch 2.0 to compile the model to be faster
 # softmax1
-softmax1 = False
+softmax1 = True
+softmaxn_param = 1
 # -----------------------------------------------------------------------------
 config_keys = [
     k
@@ -177,6 +178,7 @@ model_args = dict(
     max_seq_len=max_seq_len,
     dropout=dropout,
     softmax1=softmax1,
+    softmaxn_param=softmaxn_param
 )  # start with model_args from command line
 if init_from == "scratch":
     # init a new model from scratch
@@ -252,7 +254,7 @@ def compute_metrics():
     model.eval()
     for split in ["train", "val"]:
         batch_iter = iter_batches(split=split)
-        qbatch, deregister = activation_hooks(model)
+        qbatch, deregister, a = activation_hooks(model)
         losses = torch.zeros(eval_iters)  # keep on CPU
         for k in range(eval_iters):
             X, Y = next(batch_iter)
@@ -285,8 +287,8 @@ def compute_metrics():
     # just logging a pytorch tensor, so for now log two metrics of the softmax sum and softmax sum as a list
     s = raw_model.compute_softmax_metrics()  # [batch size, layer number, attention head, seq len]
     out[split].update({"softmax_sum_min": s.min().item(),
-                       "softmax_sum_shape": s.shape,
-                       "softmax_sum_list": s.tolist()})
+                       "softmax_sum_max": s.max().item(),
+                       "softmax_sum_shape": s.shape})
     model.train()
     return out
 
@@ -327,7 +329,7 @@ while True:
         param_group["lr"] = lr
 
     # evaluate the loss on train/val sets and write checkpoints
-    if iter_num % eval_interval == 0 and master_process:
+    if iter_num % eval_interval == 0 and master_process and iter_num != 0:
         metrics = compute_metrics()
         val_loss = metrics["val"]["loss"]
         print(
@@ -403,8 +405,10 @@ while True:
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
         print(
-            f"{iter_num} | loss {lossf:.4f} | lr {lr:e} | {dt*1000:.2f}ms | mfu {running_mfu*100:.2f}%"
+            f"{iter_num} | loss {lossf:.4f} | lr {lr:e} | {dt*1000:.2f}ms | mfu {running_mfu*100:.2f}%", end="\r"
         )
+        if wandb_log:
+            wandb.log({"train_loss": lossf, "lr": lr, "mfu": running_mfu*100})
     iter_num += 1
     local_iter_num += 1
 
