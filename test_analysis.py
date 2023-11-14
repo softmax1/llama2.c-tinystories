@@ -4,7 +4,7 @@ from torch import randn, rand
 from torch.nn import Module, Conv2d
 from torch.nn.functional import relu
 
-from analysis import compute_avg_and_std, kurtosis, activation_hooks, flatten_dict
+from metrics import compute_avg_and_std, kurtosis, activation_hooks, flatten_dict
 
 
 def test_compute_avg_and_std():

@@ -8,7 +8,7 @@ from model import ModelArgs, Transformer
 from tokenizer import Tokenizer
 
 from tinystories import get_tokenizer_model_path
-from analysis import activation_hooks, quantisation_metrics
+from metrics import activation_hooks, quantisation_metrics
 from model import attn_act
 
 # -----------------------------------------------------------------------------

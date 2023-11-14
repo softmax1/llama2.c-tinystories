@@ -32,7 +32,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tinystories import Task
 from export import model_export
 from login import login_all
-from analysis import activation_hooks, quantisation_metrics, flatten_dict
+from metrics import activation_hooks, quantisation_metrics, flatten_dict
 
 # -----------------------------------------------------------------------------
 # I/O
