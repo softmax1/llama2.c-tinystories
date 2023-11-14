@@ -226,7 +226,7 @@ class Attention(nn.Module):
 
             if FLAGS["inspect_softmax_sum"]:
                 global softmax_sum
-                if len(softmax_sum) >= 12:  # num_blocks hardcoded
+                if len(softmax_sum) >= 6: # num_blocks hardcoded
                     softmax_sum = []
                 sums = scores.detach().squeeze(0).sum(-1).cpu()
                 softmax_sum.append(sums)
