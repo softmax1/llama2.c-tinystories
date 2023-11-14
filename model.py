@@ -151,16 +151,14 @@ class Attention(nn.Module):
         self.dropout = args.dropout
 
         # use flash attention or a manual implementation?
-        # self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        # if not self.flash:
-        # print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+        self.flash = False
+        if not self.flash:
+            print("WARNING: using slow attention for softmax-n. Appeals for flashattention will be IGNORED!!!")
 
         # WARN: Force to manual attention. Appeals for flashattention will be ignored.
         mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
         mask = torch.triu(mask, diagonal=1)
         self.register_buffer("mask", mask)
-        # else:
-        # assert(not args.softmax1, "softmax1 is not supported in flash attention")
 
         self.softmax1 = args.softmax1
 
