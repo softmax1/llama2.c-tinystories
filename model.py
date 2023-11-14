@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 
+
 @dataclass
 class ModelArgs:
     # default hyperparameters for the Llama 7B model
@@ -38,6 +39,7 @@ class RMSNorm(torch.nn.Module):
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
 
+
 # Ref: https://github.com/softmax1/EsperBERTo/blob/7d2d5ed8695b95ade6bcbe21b7ce981b3c9394d7/src/functional.py#L7C6-L35
 def softmax_n_shifted_zeros(input: Tensor, n: int) -> Tensor:
     """
@@ -56,8 +58,11 @@ def softmax_n_shifted_zeros(input: Tensor, n: int) -> Tensor:
     # we need to shift the zeros in the same way we shifted the inputs
     shifted_zeros = torch.multiply(input_maxes, -1)
     # and then add this contribution to the denominator
-    denominator = torch.add(original_denominator, torch.multiply(torch.exp(shifted_zeros), n))
+    denominator = torch.add(
+        original_denominator, torch.multiply(torch.exp(shifted_zeros), n)
+    )
     return torch.divide(numerator, denominator)
+
 
 def softmax_1(input: Tensor) -> Tensor:
     """
@@ -77,6 +82,7 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
     freqs_sin = torch.sin(freqs)  # imaginary part
     return freqs_cos, freqs_sin
 
+
 def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     ndim = x.ndim
     assert 0 <= 1 < ndim
@@ -84,13 +90,10 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor):
     shape = [d if i == 1 or i == ndim - 1 else 1 for i, d in enumerate(x.shape)]
     return freqs_cis.view(shape)
 
-def apply_rotary_emb(
-    xq: torch.Tensor,
-    xk: torch.Tensor,
-    freqs_cos: torch.Tensor,
-    freqs_sin: torch.Tensor
-) -> Tuple[torch.Tensor, torch.Tensor]:
 
+def apply_rotary_emb(
+    xq: torch.Tensor, xk: torch.Tensor, freqs_cos: torch.Tensor, freqs_sin: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
     # reshape xq and xk to match the complex representation
     xq_r, xq_i = xq.float().reshape(xq.shape[:-1] + (-1, 2)).unbind(-1)
     xk_r, xk_i = xk.float().reshape(xk.shape[:-1] + (-1, 2)).unbind(-1)
@@ -111,6 +114,7 @@ def apply_rotary_emb(
 
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
+
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     """torch.repeat_interleave(x, dim=2, repeats=n_rep)"""
     bs, slen, n_kv_heads, head_dim = x.shape
@@ -122,12 +126,12 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
         .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
     )
 
-FLAGS = {
-	'inspect_attn_act': False,
-    'inspect_softmax_sum': True
-}
+
+FLAGS = {"inspect_attn_act": False, "inspect_softmax_sum": True}
 attn_act = {}
 softmax_sum = []
+
+
 class Attention(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
@@ -147,15 +151,17 @@ class Attention(nn.Module):
         self.dropout = args.dropout
 
         # use flash attention or a manual implementation?
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
-        if not self.flash:
-            # print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-            mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
-            mask = torch.triu(mask, diagonal=1)
-            self.register_buffer("mask", mask)
+        # self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
+        # if not self.flash:
+        # print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
+
+        # WARN: Force to manual attention. Appeals for flashattention will be ignored.
+        mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
+        mask = torch.triu(mask, diagonal=1)
+        self.register_buffer("mask", mask)
         # else:
-            # assert(not args.softmax1, "softmax1 is not supported in flash attention")
-        
+        # assert(not args.softmax1, "softmax1 is not supported in flash attention")
+
         self.softmax1 = args.softmax1
 
     def forward(
@@ -186,11 +192,18 @@ class Attention(nn.Module):
 
         # flash implementation
         if self.flash:
-            output = torch.nn.functional.scaled_dot_product_attention(xq, xk, xv, attn_mask=None, dropout_p=self.dropout if self.training else 0.0, is_causal=True)
+            output = torch.nn.functional.scaled_dot_product_attention(
+                xq,
+                xk,
+                xv,
+                attn_mask=None,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=True,
+            )
         else:
             # manual implementation
             scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
-            if FLAGS['inspect_attn_act']:
+            if FLAGS["inspect_attn_act"]:
                 out = scores.detach().squeeze(0).flatten(1)
                 mu = out.mean(dim=1)
                 mx = out.max(dim=1).values
@@ -199,19 +212,21 @@ class Attention(nn.Module):
                 max2 = out.topk(2, dim=1).values[:, 1]
                 block_num = len(attn_act) // self.n_local_heads
                 heads = zip(mu, mx, mn, std, max2)
-                for i,h in enumerate(heads):
-                    attn_act[f'block{block_num}_head{i}'] = [hi.item() for hi in h]
+                for i, h in enumerate(heads):
+                    attn_act[f"block{block_num}_head{i}"] = [hi.item() for hi in h]
 
-            assert hasattr(self, 'mask')
-            scores = scores + self.mask[:, :, :seqlen, :seqlen]   # (bs, n_local_heads, seqlen, cache_len + seqlen)
+            assert hasattr(self, "mask")
+            scores = (
+                scores + self.mask[:, :, :seqlen, :seqlen]
+            )  # (bs, n_local_heads, seqlen, cache_len + seqlen)
             if not self.softmax1:
                 scores = F.softmax(scores.float(), dim=-1).type_as(xq)
             else:
                 scores = softmax_1(scores.float()).type_as(xq)
 
-            if FLAGS['inspect_softmax_sum']:
+            if FLAGS["inspect_softmax_sum"]:
                 global softmax_sum
-                if len(softmax_sum) >=12: # num_blocks hardcoded
+                if len(softmax_sum) >= 12:  # num_blocks hardcoded
                     softmax_sum = []
                 sums = scores.detach().squeeze(0).sum(-1).cpu()
                 softmax_sum.append(sums)
@@ -285,10 +300,14 @@ class Transformer(nn.Module):
         self.output = nn.Linear(params.dim, params.vocab_size, bias=False)
 
         # share the unembedding parameters with the embedding parameters
-        self.tok_embeddings.weight = self.output.weight # https://paperswithcode.com/method/weight-tying
+        self.tok_embeddings.weight = (
+            self.output.weight
+        )  # https://paperswithcode.com/method/weight-tying
 
         # some useful precompute for the RoPE relative positional embeddings
-        freqs_cos, freqs_sin = precompute_freqs_cis(self.params.dim // self.params.n_heads, self.params.max_seq_len)
+        freqs_cos, freqs_sin = precompute_freqs_cis(
+            self.params.dim // self.params.n_heads, self.params.max_seq_len
+        )
         self.register_buffer("freqs_cos", freqs_cos, persistent=False)
         self.register_buffer("freqs_sin", freqs_sin, persistent=False)
 
@@ -296,8 +315,10 @@ class Transformer(nn.Module):
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
-            if pn.endswith('w3.weight') or pn.endswith('wo.weight'):
-                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * params.n_layers))
+            if pn.endswith("w3.weight") or pn.endswith("wo.weight"):
+                torch.nn.init.normal_(
+                    p, mean=0.0, std=0.02 / math.sqrt(2 * params.n_layers)
+                )
 
         # Initialize attribute for the loss of the last forward call. This will be set if the forward is called with a targets tensor.
         self.last_loss = None
@@ -310,7 +331,9 @@ class Transformer(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, tokens: torch.Tensor, targets: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self, tokens: torch.Tensor, targets: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         _bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
         h = self.dropout(h)
@@ -324,10 +347,14 @@ class Transformer(nn.Module):
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.output(h)
-            self.last_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            self.last_loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
+            )
         else:
             # inference-time mini-optimization: only forward the output on the very last position
-            logits = self.output(h[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            logits = self.output(
+                h[:, [-1], :]
+            )  # note: using list [-1] to preserve the time dim
             self.last_loss = None
 
         return logits
@@ -342,40 +369,48 @@ class Transformer(nn.Module):
         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
         nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
         optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0}
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0},
         ]
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+        print(
+            f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters"
+        )
+        print(
+            f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters"
+        )
         # Create AdamW optimizer and use the fused version if it is available
-        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device_type == 'cuda'
+        fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and device_type == "cuda"
         extra_args = dict(fused=True) if use_fused else dict()
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
+        optimizer = torch.optim.AdamW(
+            optim_groups, lr=learning_rate, betas=betas, **extra_args
+        )
         print(f"using fused AdamW: {use_fused}")
 
         return optimizer
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
-        """ estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS """
+        """estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS"""
         # first estimate the number of flops we do per iteration.
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = sum(p.numel() for p in self.parameters())
         cfg = self.params
-        L, H, Q, T = cfg.n_layers, cfg.n_heads, cfg.dim//cfg.n_heads, cfg.max_seq_len
-        flops_per_token = 6*N + 12*L*H*Q*T
+        L, H, Q, T = cfg.n_layers, cfg.n_heads, cfg.dim // cfg.n_heads, cfg.max_seq_len
+        flops_per_token = 6 * N + 12 * L * H * Q * T
         flops_per_fwdbwd = flops_per_token * T
         flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
         # express our flops throughput as ratio of A100 bfloat16 peak flops
-        flops_achieved = flops_per_iter * (1.0/dt) # per second
-        flops_promised = 312e12 # A100 GPU bfloat16 peak flops is 312 TFLOPS
+        flops_achieved = flops_per_iter * (1.0 / dt)  # per second
+        flops_promised = 312e12  # A100 GPU bfloat16 peak flops is 312 TFLOPS
         mfu = flops_achieved / flops_promised
         return mfu
 
     @torch.inference_mode()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None, return_logits=False):
+    def generate(
+        self, idx, max_new_tokens, temperature=1.0, top_k=None, return_logits=False
+    ):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
@@ -385,10 +420,14 @@ class Transformer(nn.Module):
         logits_list = []
         for _ in range(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.params.max_seq_len else idx[:, -self.params.max_seq_len:]
+            idx_cond = (
+                idx
+                if idx.size(1) <= self.params.max_seq_len
+                else idx[:, -self.params.max_seq_len :]
+            )
             # forward the model to get the logits for the index in the sequence
             logits = self(idx_cond)
-            logits = logits[:, -1, :] # crop to just the final time step
+            logits = logits[:, -1, :]  # crop to just the final time step
             logits_list.append(logits.unsqueeze(1))
 
             if temperature == 0.0:
@@ -400,7 +439,7 @@ class Transformer(nn.Module):
                 # optionally crop the logits to only the top k options
                 if top_k is not None:
                     v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                    logits[logits < v[:, [-1]]] = -float('Inf')
+                    logits[logits < v[:, [-1]]] = -float("Inf")
                 # apply softmax to convert logits to (normalized) probabilities
                 probs_next = F.softmax(logits, dim=-1)
                 idx_next = torch.multinomial(probs_next, num_samples=1)
@@ -409,5 +448,5 @@ class Transformer(nn.Module):
 
         if return_logits:
             return idx, torch.cat(logits_list, dim=1)
-        
+
         return idx
