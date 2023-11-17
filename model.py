@@ -127,9 +127,17 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 
-FLAGS = {"inspect_attn_act": False, "inspect_softmax_sum": True}
+N_BLOCKS = 6
+FLAGS = {
+    "inspect_attn_act": False,
+    "inspect_softmax_sum": True,
+    "inspect_attn_matrices": True,
+    "inspect_v_activations": True,
+}
 attn_act = {}
 softmax_sum = []
+attn_matrices = []
+v_act = []
 
 
 class Attention(nn.Module):
@@ -188,6 +196,13 @@ class Attention(nn.Module):
         xk = xk.transpose(1, 2)
         xv = xv.transpose(1, 2)
 
+        if FLAGS["inspect_v_activations"]:
+            global v_act
+            if len(v_act) >= N_BLOCKS:
+                v_act = []
+            v = xv.detach().squeeze(0).cpu()
+            v_act.append(v)
+
         # flash implementation
         if self.flash:
             output = torch.nn.functional.scaled_dot_product_attention(
@@ -224,10 +239,18 @@ class Attention(nn.Module):
 
             if FLAGS["inspect_softmax_sum"]:
                 global softmax_sum
-                if len(softmax_sum) >= 6: # num_blocks hardcoded
+                if len(softmax_sum) >= N_BLOCKS:  # WARNING: num_blocks hardcoded.
+                    # Must edit when swapping models.
                     softmax_sum = []
                 sums = scores.detach().squeeze(0).sum(-1).cpu()
                 softmax_sum.append(sums)
+
+            if FLAGS["inspect_attn_matrices"]:
+                global attn_matrices
+                if len(attn_matrices) >= N_BLOCKS:  # WANRING: num_blocks hardcoded
+                    attn_matrices = []
+                matrices = scores.detach().squeeze(0).cpu()
+                attn_matrices.append(matrices)
 
             scores = self.attn_dropout(scores)
             output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
