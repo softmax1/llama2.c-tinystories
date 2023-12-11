@@ -56,14 +56,14 @@ vocab_source = (
 )
 vocab_size = 32000  # the Llama 2 tokenizer has 32K tokens
 # model
-dim = 512
-n_layers = 8
-n_heads = 8
-n_kv_heads = 8
+dim = 288
+n_layers = 6
+n_heads = 6
+n_kv_heads = 6
 multiple_of = 32
 dropout = 0.0
 # adamw optimizer
-gradient_accumulation_steps = 16  # used to simulate larger batch sizes
+gradient_accumulation_steps = 4  # used to simulate larger batch sizes
 learning_rate = 5e-4  # max learning rate
 max_iters = 100000  # total number of training iterations (NOT steps)
 # max_steps = max_iters / batch_size 
