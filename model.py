@@ -2,13 +2,14 @@ import math
 import struct
 import inspect
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, List
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 
+from scipy.stats import kurtosis
 
 @dataclass
 class ModelArgs:
@@ -24,6 +25,7 @@ class ModelArgs:
     max_seq_len: int = 2048
     dropout: float = 0.0
     softmax1: bool = False
+    softmaxn_param: float = 1
 
 
 class RMSNorm(torch.nn.Module):
@@ -41,7 +43,7 @@ class RMSNorm(torch.nn.Module):
 
 
 # Ref: https://github.com/softmax1/EsperBERTo/blob/7d2d5ed8695b95ade6bcbe21b7ce981b3c9394d7/src/functional.py#L7C6-L35
-def softmax_n_shifted_zeros(input: Tensor, n: int) -> Tensor:
+def softmax_n_shifted_zeros(input: Tensor, n: float) -> Tensor:
     """
     $\text(softmax)_n(x_i) = exp(x_i) / (n + \sum_j exp(x_j))$
 
@@ -169,6 +171,11 @@ class Attention(nn.Module):
         self.register_buffer("mask", mask)
 
         self.softmax1 = args.softmax1
+        self.softmaxn = args.softmaxn_param
+        
+        # intermediate tensors for compute_metrics in eval state
+        self.softmax_output = None
+        self.output = None
 
     def forward(
         self,
@@ -235,8 +242,13 @@ class Attention(nn.Module):
             if not self.softmax1:
                 scores = F.softmax(scores.float(), dim=-1).type_as(xq)
             else:
-                scores = softmax_1(scores.float()).type_as(xq)
+                scores = softmax_n_shifted_zeros(scores.float(), self.softmaxn).type_as(xq)
 
+            # saves intermediate softmax tensor for compute_softmax_metrics during eval state
+            # keeping both flags and compute_metric functionality for redundancy, so use 
+            # whichever one makes you cringe less.
+            if not self.training:
+                self.softmax_output = scores.detach().cpu()
             if FLAGS["inspect_softmax_sum"]:
                 global softmax_sum
                 if len(softmax_sum) >= N_BLOCKS:  # WARNING: num_blocks hardcoded.
@@ -261,6 +273,11 @@ class Attention(nn.Module):
         # final projection into the residual stream
         output = self.wo(output)
         output = self.resid_dropout(output)
+
+        # save intermediate output for compute_attention_metrics during eval state
+        if not self.training:
+            self.output = output.detach().cpu()
+
         return output
 
 
@@ -275,9 +292,15 @@ class FeedForward(nn.Module):
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
         self.dropout = nn.Dropout(dropout)
+        # intermediate tensor for compute_metrics in eval state
+        self.output = None
 
     def forward(self, x):
-        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
+        output = self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
+        # save intermediate output for compute_ffn_metrics during eval state
+        if not self.training:
+            self.output = output.detach().cpu()
+        return output
 
 
 class TransformerBlock(nn.Module):
@@ -471,3 +494,39 @@ class Transformer(nn.Module):
             return idx, torch.cat(logits_list, dim=1)
 
         return idx
+
+    # *yoink*: https://github.com/tcapelle/llama2.c/blob/af8597ca6ac0c74142951c44b8d6926e170d791a/model.py#L428
+    # the following metric computations require that the model be run in eval mode, then the respective layer outputs
+    # will be saved in order to compute the metric of the latest input passed through the model
+    def compute_attention_metrics(self) -> Tuple[List[float], List[float]]:
+        "compute the max inf norm and kurtosis of the attention outputs"
+        outputs = [b.attention.output for b in self.layers]
+        # in original code it was .half(), but if not double dtype warnings are thrown about
+        # overflow during kurtosis calculation 
+        k = [kurtosis(o.flatten().double()) for o in outputs]
+        inf_norm = [o.abs().max().item() for o in outputs]
+        return inf_norm, k
+
+    def compute_ffn_metrics(self) -> Tuple[List[float], List[float]]:
+        "compute the max inf norm and kurtosis of the ffn outputs"
+        outputs = [b.feed_forward.output for b in self.layers]
+        k = [kurtosis(o.flatten().double()) for o in outputs]
+        inf_norm = [o.abs().max().item() for o in outputs]
+        return inf_norm, k
+
+    def compute_softmax_metrics(self) -> torch.Tensor:
+        """
+        compute the softmax sum of the attention outputs
+        output shape: [batch size, layer number, attention head, seq len]
+        """
+        assert(not self.layers[0].attention.flash, "unable to compute softmax metrics with flashattention")
+        # each softmax_output should be of shape [batch size, attention head, seq len, seq len]
+        # then we sum along each row of the softmax to get the sum of the softmax, which would usually
+        # sum to 1, but with softmax-n it can sum to < 1
+        softmax_sums = [b.attention.softmax_output.sum(-1) for b in self.layers]
+        # stack together tensors from different layers, but make sure stack of layers occurs in dim=1
+        # such that final output shape is [batch size, layer number, attention head, seq len]
+        return torch.stack(softmax_sums, dim=1)
+    # TODO Implement compute_perplexity maybe, although this will not be as reliable as compute_perplexity() in
+    #  attention_sums.ipynb that uses .generate() to compute losses for multiple tokens, computing
+    #  perplexities over multiple token generations
