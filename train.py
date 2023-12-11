@@ -36,7 +36,7 @@ from metrics import activation_hooks, quantisation_metrics, flatten_dict
 
 # -----------------------------------------------------------------------------
 # I/O
-out_dir = "out/softmax1-110m"
+out_dir = "out/"
 eval_interval = 1000  # eval how often, in iters
 log_interval = 1  # log how often, in iters
 eval_iters = 50  # eval metrics averaged over `eval_iters` iters
@@ -48,8 +48,9 @@ wandb_log = True  # enabled by default
 wandb_project = "llamac"
 wandb_run_name = "run" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 # data
-batch_size = 24  # if gradient_accumulation_steps > 1, this is the micro-batch size
+batch_size = 128  # if gradient_accumulation_steps > 1, this is the micro-batch size
 max_seq_len = 256
+
 vocab_source = (
     "llama2"  # llama2|custom; use Lllama 2 vocab from Meta, or custom trained
 )
@@ -79,8 +80,8 @@ device = (
 )
 dtype = "float16"  # float32|bfloat16|float16
 compile = False  # use PyTorch 2.0 to compile the model to be faster
-# softmax1
-softmax1 = True
+# softmax1, and the denominator parameter
+softmax1 = False
 softmaxn_param = 1
 # -----------------------------------------------------------------------------
 config_keys = [
@@ -262,20 +263,15 @@ def compute_metrics():
                 logits = model(X, Y)
                 loss = raw_model.last_loss
             losses[k] = loss.item()
-        # TODO @Markus you mentioned this was computing metrics wrongly, so I commented it out, if this is
-        #  correct can you remove this below line, if not uncomment it.
-        """
-        qstats = quantisation_metrics(qbatch, model)
-
-        out[split] = {'loss': losses.mean(),
-                      'kurtosis.weight': qstats['weights']['mean'], 
-                        'kurtosis.activation': qstats['activations']['mean']
-                        }
-        """
+        
         out[split] = {'loss': losses.mean()}
         deregister()
 
     # compute metrics on last batch of validation
+    # we are no longer using inf_norm nor kurtosis as metrics since outlier analysis
+    # is no longer an angle we are pursuing, but left here as reference for how
+    # the methods would be called and logged by wandb
+    """
     att_inf_norm, att_kurtosis = raw_model.compute_attention_metrics()
     ffn_inf_norm, ffn_kurtosis = raw_model.compute_ffn_metrics()
     for i, (att_norm, att_k, ffn_norm, ffn_k) in enumerate(zip(att_inf_norm, att_kurtosis, ffn_inf_norm, ffn_kurtosis)):
@@ -283,6 +279,7 @@ def compute_metrics():
                            f"atten_kurtosis_{i}": att_k,
                            f"ffn_inf_norm_{i}": ffn_norm,
                            f"ffn_kurtosis_{i}": ffn_k})
+    """
     # i am not certain how to log the softmax sum tensor into wandb afaik they do not fully support
     # just logging a pytorch tensor, so for now log two metrics of the softmax sum and softmax sum as a list
     s = raw_model.compute_softmax_metrics()  # [batch size, layer number, attention head, seq len]
