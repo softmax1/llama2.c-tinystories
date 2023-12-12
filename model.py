@@ -136,7 +136,7 @@ FLAGS = {
     "inspect_attn_act": False,
     "inspect_softmax_sum": True,
     "inspect_attn_matrices": True,
-    "inspect_v_activations": True,
+    "inspect_v_activations": False,
 }
 attn_act = {}
 softmax_sum = []
@@ -223,7 +223,8 @@ class Attention(nn.Module):
         else:
             # manual implementation
             scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
-            if FLAGS["inspect_attn_act"]:
+            # Turn on flags only in eval mode, else throttle training.
+            if not self.training and FLAGS["inspect_attn_act"]:
                 out = scores.detach().squeeze(0).flatten(1)
                 mu = out.mean(dim=1)
                 mx = out.max(dim=1).values
@@ -251,7 +252,7 @@ class Attention(nn.Module):
             # whichever one makes you cringe less.
             if not self.training:
                 self.softmax_output = scores.detach().cpu()
-            if FLAGS["inspect_softmax_sum"]:
+            if not self.training and FLAGS["inspect_softmax_sum"]:
                 global softmax_sum
                 if len(softmax_sum) >= N_BLOCKS:  # WARNING: num_blocks hardcoded.
                     # Must edit when swapping models.
@@ -259,7 +260,7 @@ class Attention(nn.Module):
                 sums = scores.detach().squeeze(0).sum(-1).cpu()
                 softmax_sum.append(sums)
 
-            if FLAGS["inspect_attn_matrices"]:
+            if not self.training and FLAGS["inspect_attn_matrices"]:
                 global attn_matrices
                 if len(attn_matrices) >= N_BLOCKS:  # WANRING: num_blocks hardcoded
                     attn_matrices = []
@@ -368,6 +369,9 @@ class Transformer(nn.Module):
 
         # Initialize attribute for the loss of the last forward call. This will be set if the forward is called with a targets tensor.
         self.last_loss = None
+
+        # Hook vars
+        self.logits = []
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
@@ -499,8 +503,10 @@ class Transformer(nn.Module):
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 
+        self.logits = torch.cat(logits_list, dim=1)
+
         if return_logits:
-            return idx, torch.cat(logits_list, dim=1)
+            return idx, self.logits
 
         return idx
 
@@ -528,10 +534,10 @@ class Transformer(nn.Module):
         compute the softmax sum of the attention outputs
         output shape: [batch size, layer number, attention head, seq len]
         """
-        assert (
-            not self.layers[0].attention.flash,
-            "unable to compute softmax metrics with flashattention",
-        )
+        assert not self.layers[
+            0
+        ].attention.flash, "unable to compute softmax metrics with flashattention"
+
         # each softmax_output should be of shape [batch size, attention head, seq len, seq len]
         # then we sum along each row of the softmax to get the sum of the softmax, which would usually
         # sum to 1, but with softmax-n it can sum to < 1
@@ -539,6 +545,15 @@ class Transformer(nn.Module):
         # stack together tensors from different layers, but make sure stack of layers occurs in dim=1
         # such that final output shape is [batch size, layer number, attention head, seq len]
         return torch.stack(softmax_sums, dim=1)
+
+    def compute_perplexity(self) -> torch.Tensor:
+        """
+        compute the perplexity of the model's output logits
+        """
+        assert (
+            self.last_loss is not None
+        ), "must run model in eval mode with targets to compute perplexity"
+        return torch.exp(self.last_loss)
 
     # TODO Implement compute_perplexity maybe, although this will not be as reliable as compute_perplexity() in
     #  attention_sums.ipynb that uses .generate() to compute losses for multiple tokens, computing

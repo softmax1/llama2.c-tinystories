@@ -22,7 +22,10 @@ import time
 from contextlib import nullcontext
 from datetime import datetime
 from functools import partial
+from tqdm import trange
+from pathlib import Path
 import json
+import shutil
 
 import torch
 from model import Transformer, ModelArgs
@@ -32,16 +35,17 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tinystories import Task
 from export import model_export
 from login import login_all
-from metrics import activation_hooks, quantisation_metrics, flatten_dict
+from metrics import flatten_dict, hide_warnings
 
 # -----------------------------------------------------------------------------
 # I/O
 out_dir = "out/"
 eval_interval = 1000  # eval how often, in iters
-log_interval = 1  # log how often, in iters
+log_interval = 20  # log how often, in iters
 eval_iters = 50  # eval metrics averaged over `eval_iters` iters
 eval_only = False  # if True, script exits right after the first eval
 always_save_checkpoint = True  # if True, always save a checkpoint after each eval
+n_checkpoints = 1  # keep n most recent checkpoints, or disable if == 0
 init_from = "scratch"  # 'scratch' or 'resume'
 # wandb logging
 wandb_log = True  # enabled by default
@@ -66,7 +70,7 @@ dropout = 0.0
 gradient_accumulation_steps = 4  # used to simulate larger batch sizes
 learning_rate = 5e-4  # max learning rate
 max_iters = 100000  # total number of training iterations (NOT steps)
-# max_steps = max_iters / batch_size 
+# max_steps = max_iters / batch_size
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
@@ -78,7 +82,7 @@ warmup_iters = 1000  # how many steps to warm up for
 device = (
     "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 )
-dtype = "float16"  # float32|bfloat16|float16
+dtype = "float16"  # float32|bfloat16|float16|qint8(dynamic)
 compile = False  # use PyTorch 2.0 to compile the model to be faster
 # softmax1, and the denominator parameter
 softmax1 = False
@@ -146,10 +150,17 @@ ptdtype = {
     "float32": torch.float32,
     "bfloat16": torch.bfloat16,
     "float16": torch.float16,
+    "qint8": torch.qint8,
 }[dtype]
+
+if dtype.startswith("q"):
+    # using quantization has many restrictions
+    assert device == "cpu", "PyTorch quantization only works on CPU"
+    assert eval_only, "Quantization Aware Training (QAT) not implemented"
+
 ctx = (
     nullcontext()
-    if device_type == "cpu"
+    if device_type == "cpu" or dtype.startswith("q")
     else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 )
 
@@ -179,7 +190,7 @@ model_args = dict(
     max_seq_len=max_seq_len,
     dropout=dropout,
     softmax1=softmax1,
-    softmaxn_param=softmaxn_param
+    softmaxn_param=softmaxn_param,
 )  # start with model_args from command line
 if init_from == "scratch":
     # init a new model from scratch
@@ -215,10 +226,17 @@ elif init_from == "resume":
     for k, v in list(state_dict.items()):
         if k.startswith(unwanted_prefix):
             state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
     print(list(checkpoint.keys()))
     iter_num = checkpoint.get("iter_num") or int(1e5)
-    best_val_loss = checkpoint.get("best_val_loss") or 1.5 # WARN: Don't commit this
+    best_val_loss = checkpoint.get("best_val_loss") or 1.5  # WARN: Don't commit this
+
+# optional dynamic quantization (qint8). some devices might not support.
+if dtype.startswith("q"):
+    model.tok_embeddings.qconfig = torch.quantization.float_qparams_weight_only_qconfig
+    torch.backends.quantized.engine = "qnnpack"
+    model = torch.quantization.quantize_dynamic(model, dtype=ptdtype)
+
 model.to(device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
@@ -228,7 +246,7 @@ scaler = torch.cuda.amp.GradScaler(enabled=(dtype == "float16"))
 optimizer = model.configure_optimizers(
     weight_decay, learning_rate, (beta1, beta2), device_type
 )
-if init_from == "resume" and "optimizer" in checkpoint:
+if init_from == "resume" and "optimizer" in checkpoint and not eval_only:
     optimizer.load_state_dict(checkpoint["optimizer"])
 checkpoint = None  # free up memory
 
@@ -250,34 +268,40 @@ if ddp:
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
+@hide_warnings
 def compute_metrics():
     out = {}
     model.eval()
     for split in ["train", "val"]:
         batch_iter = iter_batches(split=split)
         # qbatch, deregister, a = activation_hooks(model)
-        losses = torch.zeros(eval_iters, device='cpu')  # keep all on CPU
-        softmax_sum_mins = torch.zeros(eval_iters, device='cpu')
-        softmax_sum_maxs = torch.zeros(eval_iters, device='cpu')
-        softmax_sum_avgs = torch.zeros(eval_iters, device='cpu')
-        for k in range(eval_iters):
+        losses = torch.zeros(eval_iters, device="cpu")  # keep all on CPU
+        softmax_sum_mins = torch.zeros(eval_iters, device="cpu")
+        softmax_sum_maxs = torch.zeros(eval_iters, device="cpu")
+        softmax_sum_avgs = torch.zeros(eval_iters, device="cpu")
+        for k in trange(eval_iters):
             X, Y = next(batch_iter)
             with ctx:
                 logits = model(X, Y)
                 loss = raw_model.last_loss
                 # i am not certain how to log the softmax sum tensor into wandb afaik they do not fully support
                 # just logging a pytorch tensor, so for now log two metrics of the softmax sum and softmax sum as a list
-                s = raw_model.compute_softmax_metrics()  # [batch size, layer number, attention head, seq len]
-            
+                s = (
+                    raw_model.compute_softmax_metrics()
+                )  # [batch size, layer number, attention head, seq len]
+
             losses[k] = loss.item()
             softmax_sum_mins[k] = s.min().item()
             softmax_sum_maxs[k] = s.max().item()
             softmax_sum_avgs[k] = s.mean().item()
-            
-        out[split] = {'loss': losses.mean().item(),
-                      "avg_softmax_sum_min": softmax_sum_mins.mean().item(),
-                      "avg_softmax_sum_max": softmax_sum_maxs.mean().item(),
-                      "avg_softmax_sum_mean": softmax_sum_avgs.mean().item()}
+
+        out[split] = {
+            "loss": losses.mean().item(),
+            "ppl": torch.exp(losses).mean().item(),
+            "avg_softmax_sum_min": softmax_sum_mins.mean().item(),
+            "avg_softmax_sum_max": softmax_sum_maxs.mean().item(),
+            "avg_softmax_sum_mean": softmax_sum_avgs.mean().item(),
+        }
         # deregister()
 
     # compute metrics on last batch of validation
@@ -317,7 +341,7 @@ if wandb_log and master_process:
     import wandb
 
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
-    #wandb.define_metric("train/*", step_metric="iter")
+    # wandb.define_metric("train/*", step_metric="iter")
 
 # training loop
 train_batch_iter = iter_batches(split="train")
@@ -337,7 +361,7 @@ while True:
         metrics = compute_metrics()
         val_loss = metrics["val"]["loss"]
         print(
-            f"step {iter_num}: train loss {metrics['train']['loss']:.4f}, val loss {metrics['val']['loss']:.4f}"
+            f"step {iter_num}: train ppl {metrics['train']['ppl']:.4f}, val ppl {metrics['val']['ppl']:.4f}"
         )
         if wandb_log:
             try:
@@ -348,10 +372,13 @@ while True:
                         **flatten_dict(metrics),
                         "lr": lr,
                         "mfu": running_mfu * 100,  # convert to percentage
-                    },step=iter_num
+                    },
+                    step=iter_num,
                 )
             except Exception as e:
                 print(f"logging to wandb failed: {e}")
+        else:
+            print(f"step {iter_num}: {flatten_dict(metrics)}")
         if val_loss < best_val_loss or always_save_checkpoint:
             best_val_loss = val_loss
             if iter_num > 0:
@@ -363,10 +390,19 @@ while True:
                     "best_val_loss": best_val_loss,
                     "config": config,
                 }
-                print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
-                model_export(raw_model, os.path.join(out_dir, "model.bin"), version=0)
-    if iter_num == 0 and eval_only:
+                iter_dir = Path(out_dir) / f"iter_{iter_num}"
+                os.makedirs(iter_dir, exist_ok=True)
+                print(f"saving checkpoint to {iter_dir}")
+                # version checkpoints by iter num. keep many checkpoints?
+                torch.save(checkpoint, iter_dir / "ckpt.pt")
+                model_export(raw_model, iter_dir / "model.bin", version=0)
+                # keep n newest checkpoint by creation time, delete other folders
+                subdirs = [d for d in Path(out_dir).iterdir() if d.is_dir()]
+                subdirs.sort(key=lambda d: os.path.getctime(d), reverse=True)
+                for trash_dir in subdirs[n_checkpoints:]:
+                    print(f"deleting checkpoint in {trash_dir}")
+                    shutil.rmtree(trash_dir)
+    if eval_only:
         break
 
     # forward backward update, with optional gradient accumulation to simulate larger batch size
@@ -409,10 +445,11 @@ while True:
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
         print(
-            f"{iter_num} | loss {lossf:.4f} | lr {lr:e} | {dt*1000:.2f}ms | mfu {running_mfu*100:.2f}%", end="\r"
+            f"{iter_num} | loss {lossf:.4f} | lr {lr:e} | {dt*1000:.2f}ms | mfu {running_mfu*100:.2f}%",
+            end="\r",
         )
         if wandb_log:
-            wandb.log({"train_loss": lossf, "lr": lr, "mfu": running_mfu*100})
+            wandb.log({"train_loss": lossf, "lr": lr, "mfu": running_mfu * 100})
     iter_num += 1
     local_iter_num += 1
 
