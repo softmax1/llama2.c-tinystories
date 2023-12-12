@@ -8,8 +8,10 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
+from tqdm import trange
 
 from scipy.stats import kurtosis
+
 
 @dataclass
 class ModelArgs:
@@ -162,8 +164,6 @@ class Attention(nn.Module):
 
         # use flash attention or a manual implementation?
         self.flash = False
-        if not self.flash:
-            print("WARNING: using slow attention for softmax-n. Appeals for flashattention will be IGNORED!!!")
 
         # WARN: Force to manual attention. Appeals for flashattention will be ignored.
         mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
@@ -172,7 +172,7 @@ class Attention(nn.Module):
 
         self.softmax1 = args.softmax1
         self.softmaxn = args.softmaxn_param
-        
+
         # intermediate tensors for compute_metrics in eval state
         self.softmax_output = None
         self.output = None
@@ -242,10 +242,12 @@ class Attention(nn.Module):
             if not self.softmax1:
                 scores = F.softmax(scores.float(), dim=-1).type_as(xq)
             else:
-                scores = softmax_n_shifted_zeros(scores.float(), self.softmaxn).type_as(xq)
+                scores = softmax_n_shifted_zeros(scores.float(), self.softmaxn).type_as(
+                    xq
+                )
 
             # saves intermediate softmax tensor for compute_softmax_metrics during eval state
-            # keeping both flags and compute_metric functionality for redundancy, so use 
+            # keeping both flags and compute_metric functionality for redundancy, so use
             # whichever one makes you cringe less.
             if not self.training:
                 self.softmax_output = scores.detach().cpu()
@@ -453,7 +455,13 @@ class Transformer(nn.Module):
 
     @torch.inference_mode()
     def generate(
-        self, idx, max_new_tokens, temperature=1.0, top_k=None, return_logits=False
+        self,
+        idx,
+        max_new_tokens,
+        temperature=1.0,
+        top_k=None,
+        return_logits=False,
+        pbar=False,
     ):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
@@ -462,7 +470,8 @@ class Transformer(nn.Module):
         Also note this is a super inefficient version of sampling with no key/value cache.
         """
         logits_list = []
-        for _ in range(max_new_tokens):
+        iterator = trange if pbar else range
+        for _ in iterator(max_new_tokens):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = (
                 idx
@@ -502,7 +511,7 @@ class Transformer(nn.Module):
         "compute the max inf norm and kurtosis of the attention outputs"
         outputs = [b.attention.output for b in self.layers]
         # in original code it was .half(), but if not double dtype warnings are thrown about
-        # overflow during kurtosis calculation 
+        # overflow during kurtosis calculation
         k = [kurtosis(o.flatten().double()) for o in outputs]
         inf_norm = [o.abs().max().item() for o in outputs]
         return inf_norm, k
@@ -519,7 +528,10 @@ class Transformer(nn.Module):
         compute the softmax sum of the attention outputs
         output shape: [batch size, layer number, attention head, seq len]
         """
-        assert(not self.layers[0].attention.flash, "unable to compute softmax metrics with flashattention")
+        assert (
+            not self.layers[0].attention.flash,
+            "unable to compute softmax metrics with flashattention",
+        )
         # each softmax_output should be of shape [batch size, attention head, seq len, seq len]
         # then we sum along each row of the softmax to get the sum of the softmax, which would usually
         # sum to 1, but with softmax-n it can sum to < 1
@@ -527,6 +539,7 @@ class Transformer(nn.Module):
         # stack together tensors from different layers, but make sure stack of layers occurs in dim=1
         # such that final output shape is [batch size, layer number, attention head, seq len]
         return torch.stack(softmax_sums, dim=1)
+
     # TODO Implement compute_perplexity maybe, although this will not be as reliable as compute_perplexity() in
     #  attention_sums.ipynb that uses .generate() to compute losses for multiple tokens, computing
     #  perplexities over multiple token generations

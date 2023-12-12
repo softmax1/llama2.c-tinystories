@@ -11,3 +11,4 @@ wandb
 manual_login.sh
 err.txt
 stdout.txt
+.ipynb_checkpoints
