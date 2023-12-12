@@ -268,7 +268,6 @@ if ddp:
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
-@hide_warnings
 def compute_metrics():
     out = {}
     model.eval()
@@ -282,7 +281,7 @@ def compute_metrics():
         for k in trange(eval_iters):
             X, Y = next(batch_iter)
             with ctx:
-                logits = model(X, Y)
+                logits = hide_warnings(model)(X, Y)
                 loss = raw_model.last_loss
                 # i am not certain how to log the softmax sum tensor into wandb afaik they do not fully support
                 # just logging a pytorch tensor, so for now log two metrics of the softmax sum and softmax sum as a list
