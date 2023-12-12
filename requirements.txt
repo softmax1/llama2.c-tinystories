@@ -9,3 +9,4 @@ wandb==0.15.5
 huggingface_hub==0.16.4
 python-dotenv==1.0.0
 matplotlib==3.7.2
+scipy==1.11.4

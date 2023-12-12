@@ -3,7 +3,7 @@
 name: train
 
 resources:
-  accelerators: A100:1
+  accelerators: V100:1
 
 num_nodes: 1
 
@@ -20,8 +20,8 @@ workdir: .
 setup: |
   conda activate chatbot
   if [ $? -ne 0 ]; then
-    conda create -n llama python=3.9 -y
-    conda activate llama
+    conda create -n agi python=3.9 -y
+    conda activate agi
   fi
 
   git config --global credential.helper store
@@ -30,7 +30,7 @@ setup: |
   sudo apt install git-lfs
   git lfs install
 
-  echo 'alias skyy="cd ~/sky_workdir && conda activate llama"' >> ~/.bashrc
+  echo 'alias skyy="cd ~/sky_workdir && conda activate agi"' >> ~/.bashrc
   source ~/.bashrc
 
   cd ~/sky_workdir

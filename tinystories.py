@@ -21,6 +21,7 @@ from tokenizer import Tokenizer
 
 DATA_CACHE_DIR = "data"
 
+
 def download_file(url: str, fname: str, chunk_size=1024):
     """Helper function to download a file from a given url"""
     resp = requests.get(url, stream=True)
@@ -66,6 +67,7 @@ def download():
     print("Download done.")
     print(f"Number of shards: {len(shard_filenames)}")
     print(f"Example story:\n{data[0]}")
+
 
 def train_vocab(vocab_size):
     """
@@ -128,7 +130,9 @@ def process_shard(args, vocab_size):
     for example in tqdm(data, position=shard_id):
         text = example["story"]
         text = text.strip()  # get rid of leading/trailing whitespace
-        tokens = enc.encode(text, bos=True, eos=False)  # encode the text, use BOS
+        tokens = enc.encode(
+            text, bos=False, eos=True
+        )  # encode the text, use EOS as SEP. No BOS.
         all_tokens.extend(tokens)
     # convert to uint16 nparray
     all_tokens = np.array(all_tokens, dtype=np.uint16)
@@ -195,8 +199,10 @@ class PretokDataset(torch.utils.data.IterableDataset):
             bin_dir = os.path.join(DATA_CACHE_DIR, f"tok{self.vocab_size}")
             shard_filenames = sorted(glob.glob(os.path.join(bin_dir, "*.bin")))
         # train/test split. let's use only shard 0 for test split, rest train
-        shard_filenames = shard_filenames[1:] if self.split == "train" else shard_filenames[:1]
-        assert len(shard_filenames)>0, f"No bin files found in {bin_dir}"
+        shard_filenames = (
+            shard_filenames[1:] if self.split == "train" else shard_filenames[:1]
+        )
+        assert len(shard_filenames) > 0, f"No bin files found in {bin_dir}"
         while True:
             rng.shuffle(shard_filenames)
             for shard in shard_filenames:
@@ -216,8 +222,10 @@ class PretokDataset(torch.utils.data.IterableDataset):
                     y = chunk[1:]
                     yield x, y
 
+
 # -----------------------------------------------------------------------------
 # public interface functions
+
 
 def get_tokenizer_model_path(vocab_size):
     """
@@ -230,8 +238,8 @@ def get_tokenizer_model_path(vocab_size):
     else:
         return os.path.join(DATA_CACHE_DIR, f"tok{vocab_size}.model")
 
-class Task:
 
+class Task:
     @staticmethod
     def iter_batches(batch_size, device, num_workers=0, **dataset_kwargs):
         ds = PretokDataset(**dataset_kwargs)
@@ -242,6 +250,7 @@ class Task:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             yield x, y
+
 
 # -----------------------------------------------------------------------------
 # CLI for constructing the dataset
@@ -260,8 +269,15 @@ if __name__ == "__main__":
     python tinystories.py pretokenize --vocab_size=2048
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument("stage", type=str, choices=["download", "pretokenize", "train_vocab"])
-    parser.add_argument("--vocab_size", type=int, default=0, help="pretokenization vocab size. 0 = use Llama 2 tokenizer.")
+    parser.add_argument(
+        "stage", type=str, choices=["download", "pretokenize", "train_vocab"]
+    )
+    parser.add_argument(
+        "--vocab_size",
+        type=int,
+        default=0,
+        help="pretokenization vocab size. 0 = use Llama 2 tokenizer.",
+    )
     args = parser.parse_args()
 
     # depending on the stage call the appropriate function

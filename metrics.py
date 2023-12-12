@@ -11,7 +11,7 @@ from torch.nn import Module
 import torch
 
 
-class InferenceMetric(Enum, str):
+class InferenceMetric(str, Enum):
     """Statistical, non-visual telemetry metrics
     for model performance, original and quantised."""
 
