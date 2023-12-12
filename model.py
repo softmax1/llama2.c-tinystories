@@ -131,19 +131,6 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 
-N_BLOCKS = 8
-FLAGS = {
-    "inspect_attn_act": False,
-    "inspect_softmax_sum": True,
-    "inspect_attn_matrices": True,
-    "inspect_v_activations": False,
-}
-attn_act = {}
-softmax_sum = []
-attn_matrices = []
-v_act = []
-
-
 class Attention(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
@@ -174,8 +161,8 @@ class Attention(nn.Module):
         self.softmaxn = args.softmaxn_param
 
         # intermediate tensors for compute_metrics in eval state
-        self.scores = None
-        self.output = None
+        self.attn_act = {}
+        self.attn_output = None
 
     def forward(
         self,
@@ -203,13 +190,6 @@ class Attention(nn.Module):
         xk = xk.transpose(1, 2)
         xv = xv.transpose(1, 2)
 
-        if FLAGS["inspect_v_activations"]:
-            global v_act
-            if len(v_act) >= N_BLOCKS:
-                v_act = []
-            v = xv.detach().squeeze(0).cpu()
-            v_act.append(v)
-
         # flash implementation
         if self.flash:
             output = torch.nn.functional.scaled_dot_product_attention(
@@ -223,18 +203,18 @@ class Attention(nn.Module):
         else:
             # manual implementation
             scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
-            # Turn on flags only in eval mode, else throttle training.
-            if not self.training and FLAGS["inspect_attn_act"]:
+
+            # save intermediate output for compute_attn_act_metrics during eval state
+            if not self.training:
                 out = scores.detach().squeeze(0).flatten(1)
                 mu = out.mean(dim=1)
                 mx = out.max(dim=1).values
                 mn = out.min(dim=1).values
                 std = out.std(dim=1)
                 max2 = out.topk(2, dim=1).values[:, 1]
-                block_num = len(attn_act) // self.n_local_heads
                 heads = zip(mu, mx, mn, std, max2)
                 for i, h in enumerate(heads):
-                    attn_act[f"block{block_num}_head{i}"] = [hi.item() for hi in h]
+                    self.attn_act[f"head{i}"] = [hi.item() for hi in h]
 
             assert hasattr(self, "mask")
             scores = (
@@ -247,25 +227,9 @@ class Attention(nn.Module):
                     xq
                 )
 
-            # saves intermediate softmax tensor for compute_softmax_metrics during eval state
-            # keeping both flags and compute_metric functionality for redundancy, so use
-            # whichever one makes you cringe less.
+            # saves intermediate attn matrix tensor for compute_attn_metrics during eval state
             if not self.training:
-                self.scores = scores.detach()
-            if not self.training and FLAGS["inspect_softmax_sum"]:
-                global softmax_sum
-                if len(softmax_sum) >= N_BLOCKS:  # WARNING: num_blocks hardcoded.
-                    # Must edit when swapping models.
-                    softmax_sum = []
-                sums = scores.detach().squeeze(0).sum(-1).cpu()
-                softmax_sum.append(sums)
-
-            if not self.training and FLAGS["inspect_attn_matrices"]:
-                global attn_matrices
-                if len(attn_matrices) >= N_BLOCKS:  # WANRING: num_blocks hardcoded
-                    attn_matrices = []
-                matrices = scores.detach().squeeze(0).cpu()
-                attn_matrices.append(matrices)
+                self.attn_output = scores.detach()
 
             scores = self.attn_dropout(scores)
             output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
@@ -276,10 +240,6 @@ class Attention(nn.Module):
         # final projection into the residual stream
         output = self.wo(output)
         output = self.resid_dropout(output)
-
-        # save intermediate output for compute_attention_metrics during eval state
-        if not self.training:
-            self.output = output.detach()
 
         return output
 
@@ -295,15 +255,9 @@ class FeedForward(nn.Module):
         self.w2 = nn.Linear(hidden_dim, dim, bias=False)
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
         self.dropout = nn.Dropout(dropout)
-        # intermediate tensor for compute_metrics in eval state
-        self.output = None
 
     def forward(self, x):
-        output = self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
-        # save intermediate output for compute_ffn_metrics during eval state
-        if not self.training:
-            self.output = output.detach()
-        return output
+        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
 
 
 class TransformerBlock(nn.Module):
@@ -510,29 +464,11 @@ class Transformer(nn.Module):
 
         return idx
 
-    # *yoink*: https://github.com/tcapelle/llama2.c/blob/af8597ca6ac0c74142951c44b8d6926e170d791a/model.py#L428
     # the following metric computations require that the model be run in eval mode, then the respective layer outputs
     # will be saved in order to compute the metric of the latest input passed through the model
-    def compute_attention_metrics(self) -> Tuple[List[float], List[float]]:
-        "compute the max inf norm and kurtosis of the attention outputs"
-        outputs = [b.attention.output for b in self.layers]
-        # in original code it was .half(), but if not double dtype warnings are thrown about
-        # overflow during kurtosis calculation
-        k = [kurtosis(o.flatten().double()) for o in outputs]
-        inf_norm = [o.abs().max().item() for o in outputs]
-        return inf_norm, k
-
-    def compute_ffn_metrics(self) -> Tuple[List[float], List[float]]:
-        "compute the max inf norm and kurtosis of the ffn outputs"
-        outputs = [b.feed_forward.output for b in self.layers]
-        k = [kurtosis(o.flatten().double()) for o in outputs]
-        inf_norm = [o.abs().max().item() for o in outputs]
-        return inf_norm, k
-
-    def compute_softmax_metrics(self) -> torch.Tensor:
+    def _compute_metrics_sanity_check(self) -> None:
         """
-        compute the softmax sum of the attention outputs
-        output shape: [batch size, layer number, attention head, seq len]
+        sanity check run before every compute metrics function
         """
         any_flash = any([b.attention.flash for b in self.layers])
         assert not any_flash, "unable to compute softmax metrics with flashattention"
@@ -553,6 +489,36 @@ class Transformer(nn.Module):
         ), "must run model in eval mode with targets to compute perplexity"
         return torch.exp(self.last_loss)
 
-    # TODO Implement compute_perplexity maybe, although this will not be as reliable as compute_perplexity() in
-    #  attention_sums.ipynb that uses .generate() to compute losses for multiple tokens, computing
-    #  perplexities over multiple token generations
+    def compute_attn_metrics(self, softmax_sum: bool = False) -> torch.Tensor:
+        """
+        returns the attention matrix (or its respective softmax sum if softmax_sum = True)
+        of the attention outputs.
+        if sum = False -> output shape: [batch size, layer number, attention head, seq len, seq len]
+        if sum = True -> output shape: [batch size, layer number, attention head, seq len]
+        """
+        self._compute_metrics_sanity_check()
+        # each attn_matrix should be of shape [batch size, attention head, seq len, seq len]
+        if softmax_sum:
+            # sum along each row of the attn matrix to get the sum of the softmax, which would usually
+            # sum to 1, but with softermax it can sum to < 1
+            out = [b.attention.attn_output.sum(-1) for b in self.layers]
+        else:
+            # don't have to sum and just return the attn matrix itself
+            out = [b.attention.attn_output for b in self.layers]
+
+        # stack together tensors from different layers, but make sure stack of layers occurs in dim=1,
+        # skipping batch size in dim=0, output dim as described in docstring
+        return torch.stack(out, dim=1)
+
+    def compute_attn_act_metrics(self) -> torch.Tensor:
+        """
+        compute the attention activation metrics
+        output is a dict of mean, max, std, max2 of the attention activations.
+        """
+        self._compute_metrics_sanity_check()
+
+        out = {}
+        for block_num, b in enumerate(self.layers):
+            for key, value in b.attn_act.items():
+                out[f"block{block_num}_{key}"] = value
+        return out
