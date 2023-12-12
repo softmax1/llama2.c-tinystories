@@ -255,17 +255,30 @@ def compute_metrics():
     model.eval()
     for split in ["train", "val"]:
         batch_iter = iter_batches(split=split)
-        qbatch, deregister, a = activation_hooks(model)
-        losses = torch.zeros(eval_iters)  # keep on CPU
+        # qbatch, deregister, a = activation_hooks(model)
+        losses = torch.zeros(eval_iters, device='cpu')  # keep all on CPU
+        softmax_sum_mins = torch.zeros(eval_iters, device='cpu')
+        softmax_sum_maxs = torch.zeros(eval_iters, device='cpu')
+        softmax_sum_avgs = torch.zeros(eval_iters, device='cpu')
         for k in range(eval_iters):
             X, Y = next(batch_iter)
             with ctx:
                 logits = model(X, Y)
                 loss = raw_model.last_loss
+                # i am not certain how to log the softmax sum tensor into wandb afaik they do not fully support
+                # just logging a pytorch tensor, so for now log two metrics of the softmax sum and softmax sum as a list
+                s = raw_model.compute_softmax_metrics()  # [batch size, layer number, attention head, seq len]
+            
             losses[k] = loss.item()
-        
-        out[split] = {'loss': losses.mean()}
-        deregister()
+            softmax_sum_mins[k] = s.min().item()
+            softmax_sum_maxs[k] = s.max().item()
+            softmax_sum_avgs[k] = s.mean().item()
+            
+        out[split] = {'loss': losses.mean().item(),
+                      "avg_softmax_sum_min": softmax_sum_mins.mean().item(),
+                      "avg_softmax_sum_max": softmax_sum_maxs.mean().item(),
+                      "avg_softmax_sum_mean": softmax_sum_avgs.mean().item()}
+        # deregister()
 
     # compute metrics on last batch of validation
     # we are no longer using inf_norm nor kurtosis as metrics since outlier analysis
@@ -280,12 +293,6 @@ def compute_metrics():
                            f"ffn_inf_norm_{i}": ffn_norm,
                            f"ffn_kurtosis_{i}": ffn_k})
     """
-    # i am not certain how to log the softmax sum tensor into wandb afaik they do not fully support
-    # just logging a pytorch tensor, so for now log two metrics of the softmax sum and softmax sum as a list
-    s = raw_model.compute_softmax_metrics()  # [batch size, layer number, attention head, seq len]
-    out[split].update({"softmax_sum_min": s.min().item(),
-                       "softmax_sum_max": s.max().item(),
-                       "softmax_sum_shape": s.shape})
     model.train()
     return out
 
