@@ -46,3 +46,4 @@ run: |
 
   python train.py config/$CONFIG.py
   # On local: rsync -Pavz train:/home/gcpuser/sky_workdir/out ./out
+  # multigpu: tmux -> torchrun --standalone --nproc_per_node=N train.py config/$CONFIG.py

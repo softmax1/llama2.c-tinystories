@@ -448,7 +448,9 @@ while True:
             end="\r",
         )
         if wandb_log:
-            wandb.log({"train_loss": lossf, "lr": lr, "mfu": running_mfu * 100})
+            wandb.log(
+                {"train_loss": lossf, "lr": lr, "mfu": running_mfu * 100}, step=iter_num
+            )
     iter_num += 1
     local_iter_num += 1
 
