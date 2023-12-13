@@ -443,8 +443,10 @@ while True:
         if local_iter_num >= 5:  # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
+        eta = dt * (max_iters - iter_num)
+        eta_s = time.strftime("%H:%M:%S", time.gmtime(eta))
         print(
-            f"{iter_num} | loss {lossf:.4f} | lr {lr:e} | {dt*1000:.2f}ms | mfu {running_mfu*100:.2f}%",
+            f"{iter_num} | loss {lossf:.4f} | lr {lr:e} | {dt*1000:.2f}ms | eta {eta_s} | mfu {running_mfu*100:.2f}%",
             end="\r",
         )
         if wandb_log:
