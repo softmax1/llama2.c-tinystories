@@ -79,9 +79,7 @@ grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
 decay_lr = True  # whether to decay the learning rate
 warmup_iters = 1000  # how many steps to warm up for
 # system
-device = (
-    "cuda"  # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
-)
+device = "cpu"  # examples: 'cpu', 'cuda' etc., or try 'mps' on macbooks, 'xla' on tpus
 dtype = "float16"  # float32|bfloat16|float16|qint8(dynamic)
 compile = False  # use PyTorch 2.0 to compile the model to be faster
 # softmax1, and the denominator parameter
@@ -108,17 +106,34 @@ assert (
     vocab_source == "custom" or vocab_size == 32000
 ), "The vocab from Meta has 32K tokens"
 
+tpu = "xla" in device
+if tpu:
+    import torch_xla.core.xla_model as xm
+    import torch_xla.distributed.xla_backend
+
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
 if ddp:
-    init_process_group(backend="nccl")
     ddp_rank = int(os.environ["RANK"])
     ddp_local_rank = int(os.environ["LOCAL_RANK"])
     ddp_world_size = int(os.environ["WORLD_SIZE"])
-    device = f"cuda:{ddp_local_rank}"
-    torch.cuda.set_device(device)
+
     master_process = ddp_rank == 0  # this process will do logging, checkpointing etc.
     seed_offset = ddp_rank  # each process gets a different seed
+
+    print(f"using DDP rank {ddp_rank} / {ddp_world_size} on device {device}")
+
+    if tpu:
+        # Rank and world size are inferred from the XLA device runtime
+        init_process_group("xla", init_method="xla://")
+        # ddp_local_rank = xm.get_local_ordinal()
+        # ddp_rank = xm.get_ordinal()
+        # ddp_world_size = xm.xrt_world_size()
+    else:
+        init_process_group(backend="nccl")
+        device = f"cuda:{ddp_local_rank}"
+        torch.cuda.set_device(device)
+
     # world_size number of processes will be training simultaneously, so we can scale
     # down the desired gradient accumulation iterations per process proportionally
     assert gradient_accumulation_steps % ddp_world_size == 0
@@ -263,7 +278,7 @@ if ddp:
     # construction time since NCCL does not support `ComplexFloat`
     prefix = "_orig_mod." if compile else ""
     model._ddp_params_and_buffers_to_ignore = {prefix + "freqs_cis"}
-    model = DDP(model, device_ids=[ddp_local_rank])
+    model = DDP(model, device_ids=[ddp_local_rank], gradient_as_bucket_view=bool(tpu))
 
 
 # helps estimate an arbitrarily accurate loss over either split using many batches

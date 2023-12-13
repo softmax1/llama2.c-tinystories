@@ -18,7 +18,7 @@ envs:
 workdir: .
 
 setup: |
-  conda activate chatbot
+  conda activate agi
   if [ $? -ne 0 ]; then
     conda create -n agi python=3.9 -y
     conda activate agi

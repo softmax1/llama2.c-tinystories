@@ -1,0 +1,67 @@
+# Pretrain a Llama2-like model on SkyPilot
+# Use free TPU research cloud credits
+
+name: train-tpu
+
+resources:
+  region: us-central1 #  europe-west4
+  zone: us-central1-f #  europe-west4-a
+  accelerators: tpu-v2-8 # tpu-v3-8
+  accelerator_args:
+    tpu_vm: True # TPU VM > Node
+    runtime_version: tpu-vm-base
+
+num_nodes: 1
+
+envs:
+  HF_TOKEN: ""
+  WANDB_API_KEY: ""
+  GIT_USERNAME: ""
+  GIT_EMAIL: ""
+
+  CONFIG: "softmax0-42m"
+
+workdir: .
+
+setup: |
+  conda activate agi
+  if [ $? -ne 0 ]; then
+    conda create -n agi python=3.9 -y
+    conda activate agi
+  fi
+
+  git config --global credential.helper store
+  git config --global user.name $GIT_USERNAME
+  git config --global user.email $GIT_EMAIL
+  sudo apt install git-lfs
+  git lfs install
+
+  echo 'alias skyy="cd ~/sky_workdir && conda activate agi"' >> ~/.bashrc
+  # let torch_xla find conda libs
+  echo 'export LD_LIBRARY_PATH=/home/gcpuser/miniconda3/envs/agi/lib:$LD_LIBRARY_PATH' >> ~/.bashrc
+  echo 'export PJRT_DEVICE=TPU' >> ~/.bashrc
+  source ~/.bashrc
+
+  skyy
+  pip install -r requirements.txt
+  pip install torch~=2.1.0 torch_xla[tpu]~=2.1.0 -f https://storage.googleapis.com/libtpu-releases/index.html
+  pip install -q torchvision
+
+  python tinystories.py download
+  python tinystories.py pretokenize
+  python login.py
+
+run: |
+  set -e  # Exit if any command failed.
+  skyy
+
+  export PJRT_DEVICE=TPU
+  export TPU_IP_ADDRESS='10.128.0.9' # Find Cloud console
+  export XRT_TPU_CONFIG="tpu_worker;0;$TPU_IP_ADDRESS:8470"
+
+  python test_train_mp_mnist.py
+
+  # python tpu_sanity.py
+  # on multigpu (cuda only): torchrun --standalone --nproc_per_node=4 train.py config/$CONFIG.py
+  # singlegpu: python train.py config/$CONFIG.py
+  # On local: rsync -Pavz train:/home/gcpuser/sky_workdir/out ./out
