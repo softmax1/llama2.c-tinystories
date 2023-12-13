@@ -7,19 +7,20 @@ wandb_run_name = "softmax1-42m" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 out_dir = f"out/{wandb_run_name}"
 softmax1 = True
 
-# For 42M model
-# model
+# 42M model
 dim = 512
 n_layers = 8
 n_heads = 8
 n_kv_heads = 8
+compile = True
+dropout = 0.1
+
+# 2xA6000
+batch_size = 128
+gradient_accumulation_steps = 2
 max_seq_len = 256
+learning_rate = 8e-4
 
 # At RTX4090
-batch_size = 24
-gradient_accumulation_steps = 16
-
-# Inference
-const_out_dir = "out/softmax1-15m-2023_08_22_03_16_17"
-checkpoint = f"{const_out_dir}/ckpt.pt"
-config = f'{const_out_dir}/config.json'
+# batch_size = 24
+# gradient_accumulation_steps = 16
