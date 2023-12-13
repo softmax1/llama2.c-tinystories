@@ -12,7 +12,7 @@ dim = 512
 n_layers = 8
 n_heads = 8
 n_kv_heads = 8
-compile = True
+compile = False
 dropout = 0.1
 
 # 2xA6000
