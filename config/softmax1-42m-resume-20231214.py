@@ -18,8 +18,12 @@ compile = False
 dropout = 0.1
 
 # 2xA6000
-batch_size = 192
-gradient_accumulation_steps = 4
+# batch_size = 192
+# gradient_accumulation_steps = 4
+
+# 2xV100
+batch_size = 64
+gradient_accumulation_steps = 12
 max_seq_len = 256
 learning_rate = 8e-4
 
