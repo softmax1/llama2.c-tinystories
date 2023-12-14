@@ -22,8 +22,8 @@ dropout = 0.1
 # gradient_accumulation_steps = 4
 
 # 2xV100
-batch_size = 64
-gradient_accumulation_steps = 12
+batch_size = 48
+gradient_accumulation_steps = 16
 max_seq_len = 256
 learning_rate = 8e-4
 
