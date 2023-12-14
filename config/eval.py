@@ -1,10 +1,10 @@
 wandb_project = "softermax-eval"
 init_from = "resume"
-eval_iters = 200
+eval_iters = 100
 
-wandb_run_name = "softmax0-15m-2023_12_11_10_05_14-100k"
+wandb_run_name = "softmax1-42m-2023_12_13_10_37_41"
 out_dir = f"out/{wandb_run_name}"
-softmax1 = False
+softmax1 = True
 always_save_checkpoint = False
 wandb_log = False
 

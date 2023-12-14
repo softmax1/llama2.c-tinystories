@@ -296,6 +296,7 @@ def compute_metrics():
         for k in trange(eval_iters):
             X, Y = next(batch_iter)
             with ctx:
+                print(X.shape, Y.shape)
                 logits = hide_warnings(model)(X, Y)
                 loss = raw_model.last_loss
                 # i am not certain how to log the softmax sum tensor into wandb afaik they do not fully support
@@ -354,8 +355,12 @@ def get_lr(it):
 if wandb_log and master_process:
     import wandb
 
-    wandb.init(project=wandb_project, name=wandb_run_name, config=config)
-    # wandb.define_metric("train/*", step_metric="iter")
+    wandb.init(
+        project=wandb_project,
+        name=wandb_run_name,
+        config=config,
+        resume=init_from == "resume",
+    )
 
 # training loop
 train_batch_iter = iter_batches(split="train")

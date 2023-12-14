@@ -131,7 +131,7 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 
-N_BLOCKS = 6
+N_BLOCKS = 8
 FLAGS = {
     "inspect_attn_act": False,
     "inspect_softmax_sum": True,
