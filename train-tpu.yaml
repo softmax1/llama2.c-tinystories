@@ -55,11 +55,10 @@ run: |
   set -e  # Exit if any command failed.
   skyy
 
-  export PJRT_DEVICE=TPU
   export TPU_IP_ADDRESS='10.128.0.9' # Find Cloud console
   export XRT_TPU_CONFIG="tpu_worker;0;$TPU_IP_ADDRESS:8470"
 
-  python test_train_mp_mnist.py
+  python test_tpu_mnist.py
 
   # python tpu_sanity.py
   # on multigpu (cuda only): torchrun --standalone --nproc_per_node=4 train.py config/$CONFIG.py

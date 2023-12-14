@@ -125,11 +125,7 @@ if ddp:
     print(f"using DDP rank {ddp_rank} / {ddp_world_size} on device {device}")
 
     if tpu:
-        # Rank and world size are inferred from the XLA device runtime
         init_process_group("xla", init_method="xla://")
-        # ddp_local_rank = xm.get_local_ordinal()
-        # ddp_rank = xm.get_ordinal()
-        # ddp_world_size = xm.xrt_world_size()
     else:
         init_process_group(backend="nccl")
         device = f"cuda:{ddp_local_rank}"
