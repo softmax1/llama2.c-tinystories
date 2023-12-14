@@ -22,6 +22,7 @@ dropout = 0.1
 # gradient_accumulation_steps = 4
 
 # 2xV100
+device = "cuda"
 batch_size = 48
 gradient_accumulation_steps = 16
 max_seq_len = 256
