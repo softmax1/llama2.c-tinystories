@@ -23,7 +23,7 @@ dropout = 0.1
 
 # 2xV100
 device = "cuda"
-batch_size = 64
+batch_size = 56
 gradient_accumulation_steps = 12
 max_seq_len = 256
 learning_rate = 8e-4
