@@ -1,9 +1,11 @@
 from datetime import datetime
 
 wandb_project = "softmax1-tinystories"
+init_from = "resume"
+checkpoint_interval = 20000
 
 # For softmax0
-wandb_run_name = "softmax1-42m-" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+wandb_run_name = "softmax1-42m-2023_12_13_10_37_41"
 out_dir = f"out/{wandb_run_name}"
 softmax1 = True
 
@@ -16,8 +18,13 @@ compile = False
 dropout = 0.1
 
 # 2xA6000
-batch_size = 192
-gradient_accumulation_steps = 4
+# batch_size = 192
+# gradient_accumulation_steps = 4
+
+# 2xV100
+device = "cuda"
+batch_size = 56
+gradient_accumulation_steps = 12
 max_seq_len = 256
 learning_rate = 8e-4
 

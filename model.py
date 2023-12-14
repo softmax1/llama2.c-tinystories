@@ -131,7 +131,7 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     )
 
 
-N_BLOCKS = 6
+N_BLOCKS = 8
 FLAGS = {
     "inspect_attn_act": False,
     "inspect_softmax_sum": True,
@@ -174,7 +174,7 @@ class Attention(nn.Module):
         self.softmaxn = args.softmaxn_param
 
         # intermediate tensors for compute_metrics in eval state
-        self.softmax_output = None
+        self.scores = None
         self.output = None
 
     def forward(
@@ -251,7 +251,7 @@ class Attention(nn.Module):
             # keeping both flags and compute_metric functionality for redundancy, so use
             # whichever one makes you cringe less.
             if not self.training:
-                self.softmax_output = scores.detach().cpu()
+                self.scores = scores.detach()
             if not self.training and FLAGS["inspect_softmax_sum"]:
                 global softmax_sum
                 if len(softmax_sum) >= N_BLOCKS:  # WARNING: num_blocks hardcoded.
@@ -279,7 +279,7 @@ class Attention(nn.Module):
 
         # save intermediate output for compute_attention_metrics during eval state
         if not self.training:
-            self.output = output.detach().cpu()
+            self.output = output.detach()
 
         return output
 
@@ -302,7 +302,7 @@ class FeedForward(nn.Module):
         output = self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
         # save intermediate output for compute_ffn_metrics during eval state
         if not self.training:
-            self.output = output.detach().cpu()
+            self.output = output.detach()
         return output
 
 
@@ -534,17 +534,15 @@ class Transformer(nn.Module):
         compute the softmax sum of the attention outputs
         output shape: [batch size, layer number, attention head, seq len]
         """
-        assert not self.layers[
-            0
-        ].attention.flash, "unable to compute softmax metrics with flashattention"
+        any_flash = any([b.attention.flash for b in self.layers])
+        assert not any_flash, "unable to compute softmax metrics with flashattention"
 
-        # each softmax_output should be of shape [batch size, attention head, seq len, seq len]
-        # then we sum along each row of the softmax to get the sum of the softmax, which would usually
-        # sum to 1, but with softmax-n it can sum to < 1
-        softmax_sums = [b.attention.softmax_output.sum(-1) for b in self.layers]
-        # stack together tensors from different layers, but make sure stack of layers occurs in dim=1
-        # such that final output shape is [batch size, layer number, attention head, seq len]
-        return torch.stack(softmax_sums, dim=1)
+        attn_matrices = torch.stack(
+            [b.attention.scores for b in self.layers], dim=1
+        )  # shape [bsz, n_block, n_head, seqlen, seqlen]
+
+        # sum along last seqlen dim. gives sum in range (0,1)
+        return attn_matrices.sum(dim=-1)
 
     def compute_perplexity(self) -> torch.Tensor:
         """

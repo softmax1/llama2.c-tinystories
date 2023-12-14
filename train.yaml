@@ -18,7 +18,7 @@ envs:
 workdir: .
 
 setup: |
-  conda activate chatbot
+  conda activate agi
   if [ $? -ne 0 ]; then
     conda create -n agi python=3.9 -y
     conda activate agi
@@ -38,7 +38,7 @@ setup: |
 
   python tinystories.py download
   python tinystories.py pretokenize
-  python login.py
+  python login.py # Load from .env: export $(cat .env | xargs)
 
 run: |
   set -e  # Exit if any command failed.
@@ -46,3 +46,4 @@ run: |
 
   python train.py config/$CONFIG.py
   # On local: rsync -Pavz train:/home/gcpuser/sky_workdir/out ./out
+  # multigpu: tmux -> torchrun --standalone --nproc_per_node=N train.py config/$CONFIG.py
