@@ -162,7 +162,7 @@ class Attention(nn.Module):
 
         # intermediate tensors for compute_metrics in eval state
         self.attn_act = {}
-        self.attn_output = None
+        self.scores = None
 
     def forward(
         self,
@@ -203,19 +203,6 @@ class Attention(nn.Module):
         else:
             # manual implementation
             scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
-
-            # save intermediate output for compute_attn_act_metrics during eval state
-            if not self.training:
-                out = scores.detach().squeeze(0).flatten(1)
-                mu = out.mean(dim=1)
-                mx = out.max(dim=1).values
-                mn = out.min(dim=1).values
-                std = out.std(dim=1)
-                max2 = out.topk(2, dim=1).values[:, 1]
-                heads = zip(mu, mx, mn, std, max2)
-                for i, h in enumerate(heads):
-                    self.attn_act[f"head{i}"] = [hi.item() for hi in h]
-
             assert hasattr(self, "mask")
             scores = (
                 scores + self.mask[:, :, :seqlen, :seqlen]
@@ -227,9 +214,9 @@ class Attention(nn.Module):
                     xq
                 )
 
-            # saves intermediate attn matrix tensor for compute_attn_metrics during eval state
             if not self.training:
-                self.attn_output = scores.detach()
+                # on eval, hook onto attention scores to analyse later. assume batch size=1
+                self.scores = scores.squeeze(0).detach()
 
             scores = self.attn_dropout(scores)
             output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
@@ -466,9 +453,12 @@ class Transformer(nn.Module):
 
     # the following metric computations require that the model be run in eval mode, then the respective layer outputs
     # will be saved in order to compute the metric of the latest input passed through the model
-    def _compute_metrics_sanity_check(self) -> None:
+    def attention_matrix(self, sum=True) -> None:
         """
-        sanity check run before every compute metrics function
+        compute the Transformer heads' attention matrices, or sum.
+
+        return shape: [bsz, n_block, n_head, seqlen, seqlen] if not sum
+            else [bsz, n_block, n_head, seqlen] if sum
         """
         any_flash = any([b.attention.flash for b in self.layers])
         assert not any_flash, "unable to compute softmax metrics with flashattention"
@@ -477,8 +467,11 @@ class Transformer(nn.Module):
             [b.attention.scores for b in self.layers], dim=1
         )  # shape [bsz, n_block, n_head, seqlen, seqlen]
 
-        # sum along last seqlen dim. gives sum in range (0,1)
-        return attn_matrices.sum(dim=-1)
+        print(attn_matrices.shape)
+        if sum:  # sum along last seqlen dim. gives sum in range (0,1)
+            return attn_matrices.sum(dim=-1)
+        else:
+            return attn_matrices
 
     def compute_perplexity(self) -> torch.Tensor:
         """
@@ -488,37 +481,3 @@ class Transformer(nn.Module):
             self.last_loss is not None
         ), "must run model in eval mode with targets to compute perplexity"
         return torch.exp(self.last_loss)
-
-    def compute_attn_metrics(self, softmax_sum: bool = False) -> torch.Tensor:
-        """
-        returns the attention matrix (or its respective softmax sum if softmax_sum = True)
-        of the attention outputs.
-        if sum = False -> output shape: [batch size, layer number, attention head, seq len, seq len]
-        if sum = True -> output shape: [batch size, layer number, attention head, seq len]
-        """
-        self._compute_metrics_sanity_check()
-        # each attn_matrix should be of shape [batch size, attention head, seq len, seq len]
-        if softmax_sum:
-            # sum along each row of the attn matrix to get the sum of the softmax, which would usually
-            # sum to 1, but with softermax it can sum to < 1
-            out = [b.attention.attn_output.sum(-1) for b in self.layers]
-        else:
-            # don't have to sum and just return the attn matrix itself
-            out = [b.attention.attn_output for b in self.layers]
-
-        # stack together tensors from different layers, but make sure stack of layers occurs in dim=1,
-        # skipping batch size in dim=0, output dim as described in docstring
-        return torch.stack(out, dim=1)
-
-    def compute_attn_act_metrics(self) -> torch.Tensor:
-        """
-        compute the attention activation metrics
-        output is a dict of mean, max, std, max2 of the attention activations.
-        """
-        self._compute_metrics_sanity_check()
-
-        out = {}
-        for block_num, b in enumerate(self.layers):
-            for key, value in b.attn_act.items():
-                out[f"block{block_num}_{key}"] = value
-        return out
