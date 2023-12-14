@@ -293,7 +293,7 @@ def compute_metrics():
             with ctx:
                 model(X, Y)
                 loss.update(raw_model.last_loss)
-                sums = raw_model.compute_softmax_metrics()
+                sums = raw_model.attention_matrix()
                 sum_mean.update(sums.mean())
                 sum_std.update(sums.std())
                 pbar.set_postfix({"ppl": torch.exp(loss()).item()})

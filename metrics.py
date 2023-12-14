@@ -1,3 +1,8 @@
+"""
+Kurtosis/skew metrics deprecated as of 12/12/2023, and are shifting towards eval mode
+compute_metric functions in model.py as the standard metric logging and computation
+method. Only function still in use is the flatten_dict() utility function.
+"""
 from re import search
 from collections import defaultdict
 from functools import partial
