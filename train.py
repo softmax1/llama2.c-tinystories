@@ -297,7 +297,6 @@ def compute_metrics():
         for k in trange(eval_iters):
             X, Y = next(batch_iter)
             with ctx:
-                print(X.shape, Y.shape)
                 logits = hide_warnings(model)(X, Y)
                 loss = raw_model.last_loss
                 # i am not certain how to log the softmax sum tensor into wandb afaik they do not fully support
@@ -318,7 +317,7 @@ def compute_metrics():
             "avg_softmax_sum_max": softmax_sum_maxs.mean().item(),
             "avg_softmax_sum_mean": softmax_sum_avgs.mean().item(),
         }
-        
+
     model.train()
     return out
 
