@@ -2,6 +2,7 @@ from datetime import datetime
 
 wandb_project = "softmax1-tinystories"
 checkpoint_intervals = (1000, 2000, 4000, 8000, 16000, 32000)
+max_iters = 70000
 
 # For softmax0
 wandb_run_name = "softmax0-42m-" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
