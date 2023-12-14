@@ -33,7 +33,7 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from tinystories import Task
-from export import model_export
+# from export import model_export
 from login import login_all
 from metrics import flatten_dict, hide_warnings, MovingAverage
 
@@ -380,7 +380,7 @@ while True:
                 print(f"saving checkpoint to {iter_dir}")
                 # version checkpoints by iter num. keep many checkpoints?
                 torch.save(checkpoint, iter_dir / "ckpt.pt")
-                model_export(raw_model, iter_dir / "model.bin", version=0)
+                # model_export(raw_model, iter_dir / "model.bin", version=0)
                 # keep n newest checkpoint by creation time, delete other folders
                 subdirs = [d for d in Path(out_dir).iterdir() if d.is_dir()]
                 subdirs.sort(key=lambda d: os.path.getctime(d), reverse=True)
