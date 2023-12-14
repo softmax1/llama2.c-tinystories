@@ -2,6 +2,7 @@ from datetime import datetime
 
 wandb_project = "softmax1-tinystories"
 init_from = "resume"
+checkpoint_interval = 20000
 
 # For softmax0
 wandb_run_name = "softmax1-42m-2023_12_13_10_37_41"

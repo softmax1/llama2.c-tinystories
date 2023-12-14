@@ -46,6 +46,7 @@ eval_iters = 50  # eval metrics averaged over `eval_iters` iters
 eval_only = False  # if True, script exits right after the first eval
 always_save_checkpoint = True  # if True, always save a checkpoint after each eval
 n_checkpoints = 1  # keep n most recent checkpoints, or disable if == 0
+checkpoint_interval = 20000  # save permanent checkpoints every n intervals.
 init_from = "scratch"  # 'scratch' or 'resume'
 # wandb logging
 wandb_log = True  # enabled by default
@@ -317,21 +318,7 @@ def compute_metrics():
             "avg_softmax_sum_max": softmax_sum_maxs.mean().item(),
             "avg_softmax_sum_mean": softmax_sum_avgs.mean().item(),
         }
-        # deregister()
-
-    # compute metrics on last batch of validation
-    # we are no longer using inf_norm nor kurtosis as metrics since outlier analysis
-    # is no longer an angle we are pursuing, but left here as reference for how
-    # the methods would be called and logged by wandb
-    """
-    att_inf_norm, att_kurtosis = raw_model.compute_attention_metrics()
-    ffn_inf_norm, ffn_kurtosis = raw_model.compute_ffn_metrics()
-    for i, (att_norm, att_k, ffn_norm, ffn_k) in enumerate(zip(att_inf_norm, att_kurtosis, ffn_inf_norm, ffn_kurtosis)):
-        out[split].update({f"atten_inf_norm_{i}": att_norm,
-                           f"atten_kurtosis_{i}": att_k,
-                           f"ffn_inf_norm_{i}": ffn_norm,
-                           f"ffn_kurtosis_{i}": ffn_k})
-    """
+        
     model.train()
     return out
 
@@ -419,8 +406,16 @@ while True:
                 subdirs = [d for d in Path(out_dir).iterdir() if d.is_dir()]
                 subdirs.sort(key=lambda d: os.path.getctime(d), reverse=True)
                 for trash_dir in subdirs[n_checkpoints:]:
-                    print(f"deleting checkpoint in {trash_dir}")
-                    shutil.rmtree(trash_dir)
+                    pardoned = False
+                    try:
+                        folder_iter = int(trash_dir.name.split("_")[-1])
+                        if folder_iter % checkpoint_interval == 0:
+                            pardoned = True  # Pardon checkpoint if promise permanence
+                    except ValueError:
+                        pass
+                    if not pardoned:
+                        print(f"deleting checkpoint in {trash_dir}")
+                        shutil.rmtree(trash_dir)
     if eval_only:
         break
 
