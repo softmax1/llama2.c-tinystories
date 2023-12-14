@@ -1,16 +1,12 @@
 import math
-import struct
 import inspect
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple, List
+from typing import Optional, Tuple
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 from tqdm import trange
-
-from scipy.stats import kurtosis
 
 
 @dataclass
@@ -161,7 +157,6 @@ class Attention(nn.Module):
         self.softmaxn = args.softmaxn_param
 
         # intermediate tensors for compute_metrics in eval state
-        self.attn_act = {}
         self.scores = None
 
     def forward(
