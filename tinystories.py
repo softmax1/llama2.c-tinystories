@@ -209,11 +209,10 @@ class PretokDataset(torch.utils.data.IterableDataset):
         shard_filenames = (
             shard_filenames[1:] if self.split == "train" else shard_filenames[:1]
         )
-        epochs = 0
         assert len(shard_filenames) > 0, f"No bin files found in {bin_dir}"
         while True:
             rng.shuffle(shard_filenames)
-            for i, shard in enumerate(shard_filenames):
+            for shard in shard_filenames:
                 # open the dataset for reading but keep it on disk with memmap
                 m = np.memmap(shard, dtype=np.uint16, mode="r")
                 num_batches = len(m) // self.max_seq_len
@@ -221,16 +220,14 @@ class PretokDataset(torch.utils.data.IterableDataset):
                 assert num_batches > 0, "this shard is way too small? investigate."
                 ixs = list(range(num_batches))
                 rng.shuffle(ixs)
-                for j, ix in enumerate(ixs):
+                for ix in ixs:
                     start = ix * self.max_seq_len
                     end = start + self.max_seq_len + 1
                     # calling .astype will copy the data into a new numpy array, now in RAM
                     chunk = torch.from_numpy((m[start:end]).astype(np.int64))
                     x = chunk[:-1]
                     y = chunk[1:]
-                    epoch_percent = (i + j / num_batches) / len(shard_filenames)
-                    yield x, y, (epochs + epoch_percent)
-            epochs += 1
+                    yield x, y
 
 
 # -----------------------------------------------------------------------------
@@ -256,10 +253,10 @@ class Task:
         dl = torch.utils.data.DataLoader(
             ds, batch_size=batch_size, pin_memory=True, num_workers=num_workers
         )
-        for x, y, (n_epoch) in dl:
+        for x, y in dl:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
-            yield x, y, (n_epoch)
+            yield x, y
 
 
 # -----------------------------------------------------------------------------

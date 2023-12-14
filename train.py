@@ -72,6 +72,7 @@ dropout = 0.0
 gradient_accumulation_steps = 4  # used to simulate larger batch sizes
 learning_rate = 5e-4  # max learning rate
 max_iters = 100000  # total number of training iterations (NOT steps)
+total_tokens = 1e9 # tokens in the training corpus
 # max_steps = max_iters / batch_size
 weight_decay = 1e-1
 beta1 = 0.9
@@ -290,7 +291,7 @@ def compute_metrics():
         loss, sum_mean, sum_std = (MovingAverage() for _ in range(3))
 
         for k in (pbar := trange(eval_iters)):
-            X, Y, _ = next(batch_iter)
+            X, Y = next(batch_iter)
             with ctx:
                 model(X, Y)
                 loss.update(raw_model.last_loss)
@@ -337,7 +338,7 @@ if wandb_log and master_process:
 
 # training loop
 train_batch_iter = iter_batches(split="train")
-X, Y, _ = next(train_batch_iter)  # fetch the very first batch
+X, Y = next(train_batch_iter)  # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0  # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model  # unwrap DDP container if needed
@@ -415,7 +416,7 @@ while True:
             loss = raw_model.last_loss
             loss = loss / gradient_accumulation_steps
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y, (n_epoch) = next(train_batch_iter)
+        X, Y = next(train_batch_iter)
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
@@ -453,7 +454,7 @@ while True:
                     "mfu": running_mfu * 100,
                     "eta_hr": eta / 3600,
                     "tokens": iter_num * tokens_per_iter,
-                    "epoch": n_epoch,
+                    "epoch": (iter_num * tokens_per_iter) / total_tokens,
                 },
                 step=iter_num,
             )
