@@ -33,6 +33,7 @@ from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from tinystories import Task
+
 # from export import model_export
 from login import login_all
 from metrics import flatten_dict, hide_warnings, MovingAverage
@@ -289,7 +290,7 @@ def compute_metrics():
         loss, sum_mean, sum_std = (MovingAverage() for _ in range(3))
 
         for k in (pbar := trange(eval_iters)):
-            X, Y = next(batch_iter)
+            X, Y, _ = next(batch_iter)
             with ctx:
                 model(X, Y)
                 loss.update(raw_model.last_loss)
@@ -336,7 +337,7 @@ if wandb_log and master_process:
 
 # training loop
 train_batch_iter = iter_batches(split="train")
-X, Y = next(train_batch_iter)  # fetch the very first batch
+X, Y, _ = next(train_batch_iter)  # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0  # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model  # unwrap DDP container if needed
@@ -414,7 +415,7 @@ while True:
             loss = raw_model.last_loss
             loss = loss / gradient_accumulation_steps
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y = next(train_batch_iter)
+        X, Y, (n_epoch) = next(train_batch_iter)
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
@@ -452,6 +453,7 @@ while True:
                     "mfu": running_mfu * 100,
                     "eta_hr": eta / 3600,
                     "tokens": iter_num * tokens_per_iter,
+                    "epoch": n_epoch,
                 },
                 step=iter_num,
             )
