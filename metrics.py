@@ -276,3 +276,24 @@ def hide_warnings(function=None, out=True, in_=False):
     if function:
         return decorator_hide_warnings(function)
     return decorator_hide_warnings
+
+
+class MovingAverage:
+    """dynamic moving average: mean = (mean * i + arr[i]) / (i+1).
+    accurate to 7 d.p. for 100k elements."""
+
+    def __init__(self):
+        self.mean = torch.tensor(0)
+        self.n = torch.tensor(0)
+
+    def update(self, x):
+        """Update moving mean with new value x.
+
+        Args:
+            x (float): new value
+        """
+        self.mean = (self.mean * self.n + x) / (self.n + 1)
+        self.n += 1
+
+    def __call__(self):
+        return self.mean

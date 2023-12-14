@@ -35,7 +35,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tinystories import Task
 from export import model_export
 from login import login_all
-from metrics import flatten_dict, hide_warnings
+from metrics import flatten_dict, hide_warnings, MovingAverage
 
 # -----------------------------------------------------------------------------
 # I/O
@@ -80,8 +80,8 @@ grad_clip = 1.0  # clip gradients at this value, or disable if == 0.0
 decay_lr = True  # whether to decay the learning rate
 warmup_iters = 1000  # how many steps to warm up for
 # system
-device = "cpu"  # examples: 'cpu', 'cuda' etc., or try 'mps' on macbooks, 'xla' on tpus
-dtype = "float16"  # float32|bfloat16|float16|qint8(dynamic)
+device = "cuda"  # examples: 'cpu', 'cuda' etc., or try 'mps' on macbooks, 'xla' on tpus
+dtype = "bfloat16"  # float32|bfloat16|float16|qint8(dynamic)
 compile = False  # use PyTorch 2.0 to compile the model to be faster
 # softmax1, and the denominator parameter
 softmax1 = False
@@ -243,15 +243,16 @@ elif init_from == "resume":
         if k.startswith(unwanted_prefix):
             state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
     model.load_state_dict(state_dict, strict=False)
-    print(list(checkpoint.keys()))
     iter_num = checkpoint.get("iter_num") or int(1e5)
     best_val_loss = checkpoint.get("best_val_loss") or 1.5  # WARN: Don't commit this
 
 # optional dynamic quantization (qint8). some devices might not support.
 if dtype.startswith("q"):
+    print(f"using dynamic {dtype} quantization")
     model.tok_embeddings.qconfig = torch.quantization.float_qparams_weight_only_qconfig
     torch.backends.quantized.engine = "qnnpack"
     model = torch.quantization.quantize_dynamic(model, dtype=ptdtype)
+    model = hide_warnings(model)  # ignore warnings from quantization
 
 model.to(device)
 
@@ -289,35 +290,24 @@ def compute_metrics():
     model.eval()
     for split in ["train", "val"]:
         batch_iter = iter_batches(split=split)
-        # qbatch, deregister, a = activation_hooks(model)
-        losses = torch.zeros(eval_iters, device="cpu")  # keep all on CPU
-        softmax_sum_mins = torch.zeros(eval_iters, device="cpu")
-        softmax_sum_maxs = torch.zeros(eval_iters, device="cpu")
-        softmax_sum_avgs = torch.zeros(eval_iters, device="cpu")
-        for k in trange(eval_iters):
+        loss, sum_mean, sum_std = (MovingAverage() for _ in range(3))
+
+        for k in (pbar := trange(eval_iters)):
             X, Y = next(batch_iter)
             with ctx:
-                logits = hide_warnings(model)(X, Y)
-                loss = raw_model.last_loss
-                # i am not certain how to log the softmax sum tensor into wandb afaik they do not fully support
-                # just logging a pytorch tensor, so for now log two metrics of the softmax sum and softmax sum as a list
-                s = (
-                    raw_model.compute_softmax_metrics()
-                )  # [batch size, layer number, attention head, seq len]
-
-            losses[k] = loss.item()
-            softmax_sum_mins[k] = s.min().item()
-            softmax_sum_maxs[k] = s.max().item()
-            softmax_sum_avgs[k] = s.mean().item()
+                model(X, Y)
+                loss.update(raw_model.last_loss)
+                sums = raw_model.compute_softmax_metrics()
+                sum_mean.update(sums.mean())
+                sum_std.update(sums.std())
+                pbar.set_postfix({"ppl": torch.exp(loss()).item()})
 
         out[split] = {
-            "loss": losses.mean().item(),
-            "ppl": torch.exp(losses).mean().item(),
-            "avg_softmax_sum_min": softmax_sum_mins.mean().item(),
-            "avg_softmax_sum_max": softmax_sum_maxs.mean().item(),
-            "avg_softmax_sum_mean": softmax_sum_avgs.mean().item(),
+            "loss": loss().item(),
+            "ppl": torch.exp(loss()).item(),
+            "sum_mean": sum_mean().item(),
+            "sum_std": sum_std().item(),
         }
-
     model.train()
     return out
 
@@ -355,6 +345,7 @@ t0 = time.time()
 local_iter_num = 0  # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model  # unwrap DDP container if needed
 running_mfu = -1.0
+mdt = 0  # moving average of time/iter
 while True:
     # determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if decay_lr else learning_rate
@@ -365,28 +356,21 @@ while True:
     if iter_num % eval_interval == 0 and master_process and iter_num != 0:
         metrics = compute_metrics()
         val_loss = metrics["val"]["loss"]
+        sample_size = batch_size * max_seq_len * eval_iters  # loss/ppl average of n tok
         print(
-            f"step {iter_num}: train ppl {metrics['train']['ppl']:.4f}, val ppl {metrics['val']['ppl']:.4f}"
+            f"step {iter_num}: train ppl {metrics['train']['ppl']:.4f}, val ppl {metrics['val']['ppl']:.4f}, n {sample_size}"
         )
         if wandb_log:
             try:
-                wandb.log(
-                    {
-                        "iter": iter_num,
-                        "tokens": iter_num * tokens_per_iter,
-                        **flatten_dict(metrics),
-                        "lr": lr,
-                        "mfu": running_mfu * 100,  # convert to percentage
-                    },
-                    step=iter_num,
-                )
+                wandb.log(flatten_dict(metrics), step=iter_num)
             except Exception as e:
                 print(f"logging to wandb failed: {e}")
         else:
-            print(f"step {iter_num}: {flatten_dict(metrics)}")
+            pretty_json = json.dumps(flatten_dict(metrics), indent=2, sort_keys=True)
+            print(f"step {iter_num}: {pretty_json}")
         if val_loss < best_val_loss or always_save_checkpoint:
             best_val_loss = val_loss
-            if iter_num > 0:
+            if iter_num > 0 and not eval_only:
                 checkpoint = {
                     "model": raw_model.state_dict(),
                     "optimizer": optimizer.state_dict(),
@@ -450,6 +434,7 @@ while True:
     # timing and logging
     t1 = time.time()
     dt = t1 - t0
+    mdt = (mdt * iter_num + dt) / (iter_num + 1)
     t0 = t1
     if iter_num % log_interval == 0 and master_process:
         # get loss as float, scale up due to the divide above. note: this is a CPU-GPU sync point
@@ -457,7 +442,7 @@ while True:
         if local_iter_num >= 5:  # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
-        eta = dt * (max_iters - iter_num)
+        eta = mdt * (max_iters - iter_num)
         eta_s = time.strftime("%H:%M:%S", time.gmtime(eta))
         print(
             f"{iter_num} | loss {lossf:.4f} | lr {lr:e} | {dt*1000:.2f}ms | eta {eta_s} | mfu {running_mfu*100:.2f}%",
@@ -465,7 +450,14 @@ while True:
         )
         if wandb_log:
             wandb.log(
-                {"train_loss": lossf, "lr": lr, "mfu": running_mfu * 100}, step=iter_num
+                {
+                    "train_loss": lossf,
+                    "lr": lr,
+                    "mfu": running_mfu * 100,
+                    "eta_hr": eta / 3600,
+                    "tokens": iter_num * tokens_per_iter,
+                },
+                step=iter_num,
             )
     iter_num += 1
     local_iter_num += 1
