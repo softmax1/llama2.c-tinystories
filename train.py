@@ -47,7 +47,7 @@ eval_iters = 50  # eval metrics averaged over `eval_iters` iters
 eval_only = False  # if True, script exits right after the first eval
 always_save_checkpoint = True  # if True, always save a checkpoint after each eval
 n_checkpoints = 1  # keep n most recent checkpoints, or disable if == 0
-checkpoint_interval = 20000  # save permanent checkpoints every n intervals.
+checkpoint_intervals = ()  # permanently keep all checkpoints in list.
 init_from = "scratch"  # 'scratch' or 'resume'
 # wandb logging
 wandb_log = True  # enabled by default
@@ -72,7 +72,7 @@ dropout = 0.0
 gradient_accumulation_steps = 4  # used to simulate larger batch sizes
 learning_rate = 5e-4  # max learning rate
 max_iters = 100000  # total number of training iterations (NOT steps)
-total_tokens = 1e9 # tokens in the training corpus
+total_tokens = 1e9  # tokens in the training corpus
 # max_steps = max_iters / batch_size
 weight_decay = 1e-1
 beta1 = 0.9
@@ -390,7 +390,7 @@ while True:
                     pardoned = False
                     try:
                         folder_iter = int(trash_dir.name.split("_")[-1])
-                        if folder_iter % checkpoint_interval == 0:
+                        if folder_iter in checkpoint_intervals:
                             pardoned = True  # Pardon checkpoint if promise permanence
                     except ValueError:
                         pass
