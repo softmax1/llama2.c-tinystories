@@ -244,13 +244,19 @@ elif init_from == "resume":
     iter_num = checkpoint.get("iter_num") or int(1e5)
     best_val_loss = checkpoint.get("best_val_loss") or 1.5  # WARN: Don't commit this
 
+
+def quantize(model, dtype=torch.qint8):
+    """return qint8 cpu model."""
+    model.tok_embeddings.qconfig = torch.quantization.float_qparams_weight_only_qconfig
+    torch.backends.quantized.engine = "qnnpack"
+    qmodel = torch.quantization.quantize_dynamic(model.to("cpu"), dtype=dtype)
+    return qmodel
+
+
 # optional dynamic quantization (qint8). some devices might not support.
 if dtype.startswith("q"):
     print(f"using dynamic {dtype} quantization")
-    model.tok_embeddings.qconfig = torch.quantization.float_qparams_weight_only_qconfig
-    torch.backends.quantized.engine = "qnnpack"
-    model = torch.quantization.quantize_dynamic(model, dtype=ptdtype)
-    model = hide_warnings(model)  # ignore warnings from quantization
+    model = quantize(model, ptdtype)
 
 model.to(device)
 
@@ -286,6 +292,8 @@ if ddp:
 def compute_metrics():
     out = {}
     model.eval()
+    # TODO: Loop over fp16 and qint8 models, w testing
+    model = hide_warnings(model)
     for split in ["train", "val"]:
         batch_iter = iter_batches(split=split)
         loss, sum_mean, sum_std = (MovingAverage() for _ in range(3))
@@ -293,7 +301,7 @@ def compute_metrics():
         for k in (pbar := trange(eval_iters)):
             X, Y = next(batch_iter)
             with ctx:
-                model(X, Y)
+                model(X, Y)  # ignore warnings from quantization
                 loss.update(raw_model.last_loss)
                 sums = raw_model.attention_matrix()
                 sum_mean.update(sums.mean())

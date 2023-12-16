@@ -462,7 +462,6 @@ class Transformer(nn.Module):
             [b.attention.scores for b in self.layers], dim=1
         )  # shape [bsz, n_block, n_head, seqlen, seqlen]
 
-        print(attn_matrices.shape)
         if sum:  # sum along last seqlen dim. gives sum in range (0,1)
             return attn_matrices.sum(dim=-1)
         else:
