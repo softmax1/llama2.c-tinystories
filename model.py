@@ -173,6 +173,9 @@ class Attention(nn.Module):
         xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
 
+        # embed(x) + pos(x) -> 1st block
+        # 1st block := softmax(rotary(q)rotary(k)/dk) * v
+
         # RoPE relative positional embeddings
         xq, xk = apply_rotary_emb(xq, xk, freqs_cos, freqs_sin)
 
@@ -475,3 +478,36 @@ class Transformer(nn.Module):
             self.last_loss is not None
         ), "must run model in eval mode with targets to compute perplexity"
         return torch.exp(self.last_loss)
+
+
+if __name__ == "__main__":
+    # Symtraces are a ridiculous pain in the ass and almost impossible.
+    # https://pytorch.org/tutorials/prototype/fx_graph_mode_quant_guide.html
+    from torch.fx import symbolic_trace
+
+    model = Transformer(
+        ModelArgs(
+            dim=1,
+            n_layers=1,
+            n_heads=1,
+            n_kv_heads=1,
+            vocab_size=1,
+            hidden_dim=1,
+            multiple_of=1,
+            norm_eps=1,
+            max_seq_len=1,
+            dropout=0.0,
+            softmax1=True,
+            softmaxn_param=1,
+        )
+    )
+
+    raise NotImplementedError("Symtraces don't work on llama2.c yet.")
+    # Symbolic tracing frontend - captures the semantics of the module
+    symbolic_traced: torch.fx.GraphModule = symbolic_trace(model)
+
+    # High-level intermediate representation (IR) - Graph representation
+    print(symbolic_traced.graph)
+
+    # Code generation - valid Python code
+    print(symbolic_traced.code)
